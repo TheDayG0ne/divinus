@@ -38,6 +38,14 @@ void hal_identify(void) {
     if (t31_system_identify()) return;
 #elif defined(__riscv) || defined(__riscv__)
     if (cvi_system_identify()) return;
+#elif defined(__i386__) || defined(__x86_64__)
+    plat = HAL_PLATFORM_UVC;
+    strcpy(chip, "x86");
+    strcpy(family, "uvc");
+    chnCount = UVC_MAX_CHANNELS;
+    chnState = uvc_state;
+    aud_thread = uvc_audio_thread;
+    vid_thread = uvc_video_thread;
 #endif
 }
 

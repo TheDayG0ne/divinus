@@ -1,4 +1,7 @@
 #include "onvif.h"
+#include <stdatomic.h>
+#include <sys/utsname.h>
+#include <time.h>
 
 IMPORT_STR(.rodata, "../res/onvif/capabilities.xml", capabilitiesxml);
 extern const char capabilitiesxml[];
@@ -26,6 +29,37 @@ const char onvifgood[] = "HTTP/1.1 200 OK\r\n" \
 
 extern NetInfo netinfo;
 pthread_t onvifPid = 0;
+
+static char onvif_uuid[37];
+static atomic_uint_fast64_t onvif_message_seq;
+
+static void onvif_init_identity(void) {
+    unsigned char digest[SHA1_DIGEST_SIZE];
+    char seed[256];
+    struct utsname host;
+    FILE *f;
+    size_t n = 0;
+
+    if (onvif_uuid[0]) return;
+    memset(seed, 0, sizeof(seed));
+    if (uname(&host) == 0)
+        n += snprintf(seed + n, sizeof(seed) - n, "%s:%s:%s", host.nodename, host.machine, chip);
+    f = fopen("/etc/machine-id", "r");
+    if (f) { n += fread(seed + n, 1, sizeof(seed) - n - 1, f); fclose(f); }
+    if (!n) n = snprintf(seed, sizeof(seed), "%s:%s", family, sensor);
+    sha1_context ctx;
+    sha1_init(&ctx);
+    sha1_update(&ctx, (unsigned char *)seed, n);
+    sha1_final(digest, &ctx);
+    snprintf(onvif_uuid, sizeof(onvif_uuid), "%02x%02x%02x%02x-%02x%02x-5%02x-%02x%02x-%02x%02x%02x%02x%02x%02x%02x%02x",
+        digest[0],digest[1],digest[2],digest[3],digest[4],digest[5],digest[6],digest[7],digest[8],digest[9],digest[10],digest[11],digest[12],digest[13],digest[14],digest[15],digest[16],digest[17]);
+    atomic_init(&onvif_message_seq, 0);
+}
+
+static void onvif_message_id(char *out, size_t size) {
+    uint64_t seq = atomic_fetch_add(&onvif_message_seq, 1) + 1;
+    snprintf(out, size, "urn:uuid:%s-%016llx", onvif_uuid, (unsigned long long)seq);
+}
 
 int start_onvif(void) {
     pthread_attr_t thread_attr;
@@ -57,6 +91,10 @@ void *onvif_thread(void) {
         return (void*)EXIT_FAILURE;
     }
 
+    int reuse = 1;
+    if (setsockopt(servfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0)
+        HAL_WARNING("onvif", "Failed to enable SO_REUSEADDR: %s\n", strerror(errno));
+
     memset(&servaddr, 0, sizeof(servaddr));
     servaddr.sin_family = AF_INET;
     servaddr.sin_addr.s_addr = INADDR_ANY;
@@ -66,6 +104,8 @@ void *onvif_thread(void) {
         .imr_multiaddr.s_addr = inet_addr("239.255.255.250"),
         .imr_interface.s_addr = htonl(INADDR_ANY)
     };
+
+    onvif_init_identity();
 
     if (bind(servfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) == -1) {
         HAL_DANGER("onvif", "Failed to bind socket!\n");
@@ -109,12 +149,9 @@ void *onvif_thread(void) {
         if (!CONTAINS(request, "http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe"))
             continue;
 
-        char device_name[64], device_uuid[64], device_url[128], msgid[100] = "";
-        {
-            char uuid[37];
-            uuid_generate(uuid);
-            snprintf(device_uuid, sizeof(device_uuid), "urn:uuid:%s", uuid);
-        }
+        char device_name[64], device_uuid[64], device_url[128], msgid[100] = "", response_id[100];
+        snprintf(device_uuid, sizeof(device_uuid), "urn:uuid:%s", onvif_uuid);
+        onvif_message_id(response_id, sizeof(response_id));
         snprintf(device_name, sizeof(device_name), "Divinus");
         char address[INET_ADDRSTRLEN];
         network_address(address);
@@ -132,7 +169,9 @@ void *onvif_thread(void) {
         }
         
         int respLen = snprintf(response, sizeof(response), discoveryxml,
-            device_uuid, msgid, device_uuid, device_name, device_url);
+            response_id, msgid, device_uuid, device_name, device_url);
+        if (respLen < 0 || (size_t)respLen >= sizeof(response))
+            continue;
     
         HAL_INFO("onvif", "Sending discovery response to %s:%d\n", 
                  inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));

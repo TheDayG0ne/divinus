@@ -7,6 +7,10 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#if defined(__i386__) || defined(__x86_64__)
+#include "uvc_hal.h"
+#endif
+
 #if defined(__ARM_PCS_VFP)
 #include "star/i3_hal.h"
 #include "star/i6_hal.h"

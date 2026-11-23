@@ -427,6 +427,8 @@ int create_channel(char index, short width, short height, char framerate, char j
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: return cvi_channel_create(index, width, height,
             framerate, app_config.mirror, app_config.flip);
+#elif defined(__i386__) || defined(__x86_64__)
+        case HAL_PLATFORM_UVC: return uvc_channel_create(index, width, height, framerate, jpeg);
 #endif
     }
 }
@@ -453,6 +455,8 @@ int bind_channel(char index, char framerate, char jpeg) {
         case HAL_PLATFORM_T31: return t31_channel_bind(index);
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: return cvi_channel_bind(index);
+#elif defined(__i386__) || defined(__x86_64__)
+         case HAL_PLATFORM_UVC: return uvc_channel_bind(index);
 #endif
     }
 }
@@ -479,6 +483,8 @@ int unbind_channel(char index, char jpeg) {
         case HAL_PLATFORM_T31: return t31_channel_unbind(index);
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: return cvi_channel_unbind(index);
+#elif defined(__i386__) || defined(__x86_64__)
+         case HAL_PLATFORM_UVC: return uvc_channel_unbind(index);
 #endif
     }
 }
@@ -505,6 +511,8 @@ int media_video_disable(char index, char jpeg) {
         case HAL_PLATFORM_T31: return t31_video_destroy(index);
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: return cvi_video_destroy(index);
+#elif defined(__i386__) || defined(__x86_64__)
+         case HAL_PLATFORM_UVC: return uvc_video_destroy(index);
 #endif
     }
     return 0;
@@ -833,7 +841,7 @@ int media_mp4_enable(void) {
 }
 
 int sdk_start(void) {
-    int ret;
+    int ret = EXIT_SUCCESS;
 
     switch (plat) {
 #if defined(__ARM_PCS_VFP)
@@ -857,6 +865,8 @@ int sdk_start(void) {
         case HAL_PLATFORM_T31: ret = t31_hal_init(); break;
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: ret = cvi_hal_init(); break;
+#elif defined(__i386__) || defined(__x86_64__)
+         case HAL_PLATFORM_UVC: ret = uvc_hal_init(); break;
 #endif
     }
     if (ret)
@@ -926,6 +936,10 @@ int sdk_start(void) {
             cvi_aud_cb = save_audio_stream;
             cvi_vid_cb = save_video_stream;
             break;
+#elif defined(__i386__) || defined(__x86_64__)
+        case HAL_PLATFORM_UVC:
+            uvc_vid_cb = save_video_stream;
+            break;
 #endif
     }
 
@@ -951,6 +965,8 @@ int sdk_start(void) {
         case HAL_PLATFORM_T31: ret = t31_system_init(); break;
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: ret = cvi_system_init(app_config.sensor_config); break;
+#elif defined(__i386__) || defined(__x86_64__)
+         case HAL_PLATFORM_UVC: ret = uvc_system_init(app_config.sensor_config); break;
 #endif
     }
     if (ret)
@@ -998,6 +1014,8 @@ int sdk_start(void) {
             app_config.flip, framerate, app_config.antiflicker); break;
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: ret = cvi_pipeline_create(); break;
+#elif defined(__i386__) || defined(__x86_64__)
+         case HAL_PLATFORM_UVC: ret = uvc_pipeline_create(); break;
 #endif
     }
     if (ret)
@@ -1126,6 +1144,8 @@ int sdk_stop(void) {
         case HAL_PLATFORM_T31: t31_pipeline_destroy(); break;
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: cvi_pipeline_destroy(); break;
+#elif defined(__i386__) || defined(__x86_64__)
+         case HAL_PLATFORM_UVC: uvc_pipeline_destroy(); break;
 #endif
     }
 
@@ -1157,6 +1177,8 @@ int sdk_stop(void) {
         case HAL_PLATFORM_T31: t31_system_deinit(); break;
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: cvi_system_deinit(); break;
+#elif defined(__i386__) || defined(__x86_64__)
+         case HAL_PLATFORM_UVC: uvc_system_deinit(); break;
 #endif
     }
 
@@ -1191,6 +1213,8 @@ int sdk_stop(void) {
         case HAL_PLATFORM_T31: t31_hal_deinit(); break;
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: cvi_hal_deinit(); break;
+#elif defined(__i386__) || defined(__x86_64__)
+         case HAL_PLATFORM_UVC: uvc_hal_deinit(); break;
 #endif
     }
 
