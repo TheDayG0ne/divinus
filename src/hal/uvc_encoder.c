@@ -8,11 +8,13 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
 #include <libswscale/swscale.h>
 
 struct uvc_encoder {
     int width, height, fps;
     enum AVPixelFormat input;
+    int input_stride;
     AVCodecContext *codec;
     AVCodecContext *decoder;
     AVFrame *frame;
@@ -28,11 +30,11 @@ static enum AVPixelFormat input_format(uint32_t fmt) {
 
 int uvc_encoder_available(void) { return 1; }
 
-struct uvc_encoder *uvc_encoder_create(int width, int height, int fps, int bitrate, int gop, uint32_t fmt) {
+struct uvc_encoder *uvc_encoder_create(int width, int height, int fps, int bitrate, int gop, uint32_t fmt, int stride) {
     struct uvc_encoder *e = calloc(1, sizeof(*e));
     const AVCodec *codec, *decoder;
     if (!e || width < 2 || height < 2 || fps < 1) goto fail;
-    e->width=width; e->height=height; e->fps=fps; e->input=input_format(fmt);
+    e->width=width; e->height=height; e->fps=fps; e->input=input_format(fmt); e->input_stride=stride>0?stride:width*2;
     codec=avcodec_find_encoder(AV_CODEC_ID_H264);
     if (!codec) goto fail;
     e->codec=avcodec_alloc_context3(codec);
@@ -40,7 +42,11 @@ struct uvc_encoder *uvc_encoder_create(int width, int height, int fps, int bitra
     e->codec->width=width; e->codec->height=height; e->codec->time_base=(AVRational){1,fps};
     e->codec->framerate=(AVRational){fps,1}; e->codec->pix_fmt=AV_PIX_FMT_YUV420P;
     e->codec->bit_rate=bitrate>0?bitrate:2000000; e->codec->gop_size=gop>0?gop:fps*2;
-    e->codec->max_b_frames=0; e->codec->thread_count=1;
+    e->codec->max_b_frames=0; e->codec->thread_count=1; e->codec->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    av_opt_set(e->codec->priv_data, "preset", "ultrafast", 0);
+    av_opt_set(e->codec->priv_data, "tune", "zerolatency", 0);
+    av_opt_set(e->codec->priv_data, "repeat-headers", "1", 0);
+    av_opt_set(e->codec->priv_data, "annexb", "1", 0);
     if (avcodec_open2(e->codec, codec, NULL)<0) goto fail;
     e->frame=av_frame_alloc(); e->decoded=av_frame_alloc(); e->packet=av_packet_alloc();
     if (!e->frame || !e->decoded || !e->packet) goto fail;
@@ -61,27 +67,28 @@ void uvc_encoder_destroy(struct uvc_encoder *e) {
 }
 
 int uvc_encoder_encode(struct uvc_encoder *e, const void *data, size_t len, uint64_t ts, const unsigned char **out, size_t *out_len) {
-    AVFrame *src=e->frame; AVPacket in; int r;
+    AVFrame *src; AVPacket in; int r;
     if(!e||!data||!len||!out||!out_len) return -1;
     if(e->decoder) {
         av_init_packet(&in); in.data=(uint8_t*)data; in.size=(int)len;
         if(avcodec_send_packet(e->decoder,&in)<0 || avcodec_receive_frame(e->decoder,e->decoded)<0) return -1;
         src=e->decoded;
     } else {
-        size_t need=(size_t)e->width*e->height*2; if(len<need) return -1;
-        av_image_fill_arrays(src->data,src->linesize,(const uint8_t*)data,e->input,e->width,e->height,1);
+        size_t need=(size_t)e->input_stride*e->height; if(len<need) return -1;
+        av_frame_unref(e->decoded); e->decoded->format=e->input; e->decoded->width=e->width; e->decoded->height=e->height;
+        e->decoded->data[0]=(uint8_t *)data; e->decoded->linesize[0]=e->input_stride; src=e->decoded;
     }
     e->scale=sws_getCachedContext(e->scale,e->width,e->height,src->format,e->width,e->height,AV_PIX_FMT_YUV420P,SWS_BILINEAR,NULL,NULL,NULL);
     if(!e->scale || av_frame_make_writable(e->frame)<0) return -1;
     sws_scale(e->scale,(const uint8_t * const*)src->data,src->linesize,0,e->height,e->frame->data,e->frame->linesize);
     e->frame->pts=e->pts++; r=avcodec_send_frame(e->codec,e->frame); if(r<0)return -1;
-    r=avcodec_receive_packet(e->codec,e->packet); if(r<0)return -1;
+    r=avcodec_receive_packet(e->codec,e->packet); if(r==AVERROR(EAGAIN)) return -2; if(r<0)return -1;
     *out=e->packet->data; *out_len=e->packet->size; (void)ts; return 0;
 }
 #else
 struct uvc_encoder { int unavailable; };
 int uvc_encoder_available(void) { return 0; }
-struct uvc_encoder *uvc_encoder_create(int w,int h,int fps,int bitrate,int gop,uint32_t fmt){(void)w;(void)h;(void)fps;(void)bitrate;(void)gop;(void)fmt;return NULL;}
+struct uvc_encoder *uvc_encoder_create(int w,int h,int fps,int bitrate,int gop,uint32_t fmt,int stride){(void)w;(void)h;(void)fps;(void)bitrate;(void)gop;(void)fmt;(void)stride;return NULL;}
 void uvc_encoder_destroy(struct uvc_encoder *e){free(e);}
 int uvc_encoder_encode(struct uvc_encoder *e,const void*d,size_t l,uint64_t t,const unsigned char**o,size_t*n){(void)e;(void)d;(void)l;(void)t;(void)o;(void)n;return -1;}
 #endif
