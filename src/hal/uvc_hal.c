@@ -78,8 +78,12 @@ void *uvc_video_thread(void){
             unsigned char *n=realloc(last,b.bytesused); if(n){last=n;memcpy(last,frame,b.bytesused);last_len=b.bytesused;}
         }
         if (uvc_encoder_encode(encoder,frame,b.bytesused,(uint64_t)b.timestamp.tv_sec*1000000+b.timestamp.tv_usec,(const unsigned char **)&encoded,&encoded_len)<0) { pthread_mutex_unlock(&mtx); ctl(VIDIOC_QBUF,&b); continue; }
-        for(int i=0;i<UVC_MAX_CHANNELS;i++) if(uvc_state[i].enable&&uvc_state[i].mainLoop&&uvc_vid_cb){hal_vidpack pack;hal_vidstream s;memset(&pack,0,sizeof(pack));pack.data=encoded;pack.length=encoded_len;pack.naluCnt=1;pack.nalu[0].length=encoded_len;pack.timestamp=(uint64_t)b.timestamp.tv_sec*1000000+b.timestamp.tv_usec;s.pack=&pack;s.count=1;s.seq=0;uvc_vid_cb(i,&s);}
+        unsigned char *callback_frame=malloc(encoded_len);
+        if (!callback_frame) { pthread_mutex_unlock(&mtx); ctl(VIDIOC_QBUF,&b); continue; }
+        memcpy(callback_frame,encoded,encoded_len);
         pthread_mutex_unlock(&mtx);
+        for(int i=0;i<UVC_MAX_CHANNELS;i++) if(uvc_state[i].enable&&uvc_state[i].mainLoop&&uvc_vid_cb){hal_vidpack pack;hal_vidstream s;memset(&pack,0,sizeof(pack));pack.data=callback_frame;pack.length=encoded_len;pack.naluCnt=1;pack.nalu[0].length=encoded_len;pack.timestamp=(uint64_t)b.timestamp.tv_sec*1000000+b.timestamp.tv_usec;s.pack=&pack;s.count=1;s.seq=0;uvc_vid_cb(i,&s);}
+        free(callback_frame);
         ctl(VIDIOC_QBUF,&b);
     } return NULL;
 }
