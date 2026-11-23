@@ -20,6 +20,8 @@ struct uvc_encoder {
     AVFrame *frame;
     AVFrame *decoded;
     AVPacket *packet;
+    unsigned char *output;
+    size_t output_capacity;
     struct SwsContext *scale;
     int64_t pts;
 };
@@ -63,7 +65,7 @@ fail: uvc_encoder_destroy(e); return NULL;
 
 void uvc_encoder_destroy(struct uvc_encoder *e) {
     if (!e) return; if(e->codec) avcodec_free_context(&e->codec); if(e->decoder) avcodec_free_context(&e->decoder);
-    if(e->scale) sws_freeContext(e->scale); av_frame_free(&e->frame); av_frame_free(&e->decoded); av_packet_free(&e->packet); free(e);
+    if(e->scale) sws_freeContext(e->scale); free(e->output); av_frame_free(&e->frame); av_frame_free(&e->decoded); av_packet_free(&e->packet); free(e);
 }
 
 int uvc_encoder_encode(struct uvc_encoder *e, const void *data, size_t len, uint64_t ts, const unsigned char **out, size_t *out_len) {
@@ -83,7 +85,8 @@ int uvc_encoder_encode(struct uvc_encoder *e, const void *data, size_t len, uint
     sws_scale(e->scale,(const uint8_t * const*)src->data,src->linesize,0,e->height,e->frame->data,e->frame->linesize);
     e->frame->pts=e->pts++; r=avcodec_send_frame(e->codec,e->frame); if(r<0)return -1;
     r=avcodec_receive_packet(e->codec,e->packet); if(r==AVERROR(EAGAIN)) return -2; if(r<0)return -1;
-    *out=e->packet->data; *out_len=e->packet->size; (void)ts; return 0;
+    if ((size_t)e->packet->size > e->output_capacity) { unsigned char *p=realloc(e->output,e->packet->size); if(!p)return -1; e->output=p; e->output_capacity=e->packet->size; }
+    memcpy(e->output,e->packet->data,e->packet->size); *out=e->output; *out_len=e->packet->size; av_packet_unref(e->packet); (void)ts; return 0;
 }
 #else
 struct uvc_encoder { int unavailable; };
