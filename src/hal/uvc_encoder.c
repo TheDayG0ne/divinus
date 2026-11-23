@@ -22,6 +22,7 @@ struct uvc_encoder {
     AVPacket *packet;
     unsigned char *output;
     size_t output_capacity;
+    int extradata_annexb;
     struct SwsContext *scale;
     int64_t pts;
 };
@@ -50,6 +51,8 @@ struct uvc_encoder *uvc_encoder_create(int width, int height, int fps, int bitra
     av_opt_set(e->codec->priv_data, "repeat-headers", "1", 0);
     av_opt_set(e->codec->priv_data, "annexb", "1", 0);
     if (avcodec_open2(e->codec, codec, NULL)<0) goto fail;
+    if (e->codec->extradata && e->codec->extradata_size >= 4)
+        e->extradata_annexb = e->codec->extradata[0] == 0 && e->codec->extradata[1] == 0 && e->codec->extradata[2] == 0 && e->codec->extradata[3] == 1;
     e->frame=av_frame_alloc(); e->decoded=av_frame_alloc(); e->packet=av_packet_alloc();
     if (!e->frame || !e->decoded || !e->packet) goto fail;
     e->frame->format=e->codec->pix_fmt; e->frame->width=width; e->frame->height=height;
@@ -85,8 +88,22 @@ int uvc_encoder_encode(struct uvc_encoder *e, const void *data, size_t len, uint
     sws_scale(e->scale,(const uint8_t * const*)src->data,src->linesize,0,e->height,e->frame->data,e->frame->linesize);
     e->frame->pts=e->pts++; r=avcodec_send_frame(e->codec,e->frame); if(r<0)return -1;
     r=avcodec_receive_packet(e->codec,e->packet); if(r==AVERROR(EAGAIN)) return -2; if(r<0)return -1;
-    if ((size_t)e->packet->size > e->output_capacity) { unsigned char *p=realloc(e->output,e->packet->size); if(!p)return -1; e->output=p; e->output_capacity=e->packet->size; }
-    memcpy(e->output,e->packet->data,e->packet->size); *out=e->output; *out_len=e->packet->size; av_packet_unref(e->packet); (void)ts; return 0;
+    int has_idr=0, has_sps=0, has_pps=0;
+    for (int i=0;i+4<e->packet->size;i++) if(!e->packet->data[i]&&!e->packet->data[i+1]&&!e->packet->data[i+2]&&e->packet->data[i+3]==1) { int t=e->packet->data[i+4]&31; has_idr|=t==5; has_sps|=t==7; has_pps|=t==8; }
+    size_t prefix=0;
+    if (has_idr && (!has_sps || !has_pps) && e->codec->extradata) {
+        if (e->codec->extradata_size>=4 && e->codec->extradata[0]==1) {
+            const uint8_t *p=e->codec->extradata; int left=e->codec->extradata_size, ns=p[5]&31; p+=6; left-=6;
+            for(int n=0;n<ns&&left>=2;n++){int z=(p[0]<<8)|p[1];p+=2;left-=2;prefix+=4+z;p+=z;left-=z;}
+            if(left>=1){int np=*p++;left--;for(int n=0;n<np&&left>=2;n++){int z=(p[0]<<8)|p[1];p+=2;left-=2;prefix+=4+z;p+=z;left-=z;}}
+        } else prefix=e->codec->extradata_size;
+    }
+    size_t total=prefix+(size_t)e->packet->size;
+    if (total > e->output_capacity) { unsigned char *p=realloc(e->output,total); if(!p)return -1; e->output=p; e->output_capacity=total; }
+    size_t at=0;
+    if(prefix){const uint8_t *p=e->codec->extradata;int left=e->codec->extradata_size;
+        if(e->codec->extradata_size>=4&&p[0]==1){int ns=p[5]&31;p+=6;left-=6;for(int n=0;n<ns&&left>=2;n++){int z=(p[0]<<8)|p[1];p+=2;left-=2;memcpy(e->output+at,"\0\0\0\1",4);at+=4;memcpy(e->output+at,p,z);at+=z;p+=z;left-=z;}if(left>=1){int np=*p++;left--;for(int n=0;n<np&&left>=2;n++){int z=(p[0]<<8)|p[1];p+=2;left-=2;memcpy(e->output+at,"\0\0\0\1",4);at+=4;memcpy(e->output+at,p,z);at+=z;p+=z;left-=z;}}}else{memcpy(e->output,e->codec->extradata,prefix);at=prefix;}}
+    memcpy(e->output+at,e->packet->data,e->packet->size); *out=e->output; *out_len=total; av_packet_unref(e->packet); (void)ts; return 0;
 }
 #else
 struct uvc_encoder { int unavailable; };
