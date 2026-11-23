@@ -1,4 +1,5 @@
 #include "uvc_hal.h"
+#include "uvc_encoder.h"
 #include <linux/videodev2.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -11,7 +12,9 @@ struct uvc_buf { void *data; size_t len; };
 static int fd = -1, width, height, streaming;
 static unsigned int buf_count;
 static uint32_t pixel_format;
+static int fps=30;
 static struct uvc_buf bufs[UVC_BUFS];
+static struct uvc_encoder *encoder;
 static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
 static unsigned char *last; static size_t last_len;
 hal_chnstate uvc_state[UVC_MAX_CHANNELS];
@@ -22,7 +25,7 @@ static void close_device(void) {
     if (fd < 0) return;
     if (streaming) { enum v4l2_buf_type t=V4L2_BUF_TYPE_VIDEO_CAPTURE; ctl(VIDIOC_STREAMOFF,&t); streaming=0; }
     for (int i=0;i<UVC_BUFS;i++) if (bufs[i].data) munmap(bufs[i].data,bufs[i].len);
-    close(fd); fd=-1; buf_count=0; free(last); last=NULL; last_len=0;
+    close(fd); fd=-1; buf_count=0; uvc_encoder_destroy(encoder); encoder=NULL; free(last); last=NULL; last_len=0;
 }
 int uvc_hal_init(void) { memset(uvc_state,0,sizeof(uvc_state)); return 0; }
 void uvc_hal_deinit(void) { close_device(); }
@@ -39,10 +42,16 @@ int uvc_pipeline_create() {
     if(f.fmt.pix.pixelformat!=V4L2_PIX_FMT_MJPEG && f.fmt.pix.pixelformat!=V4L2_PIX_FMT_YUYV) { close_device(); return -1; }
     if(f.fmt.pix.width < 2 || f.fmt.pix.height < 2 || f.fmt.pix.sizeimage == 0) { close_device(); return -1; }
     width=f.fmt.pix.width; height=f.fmt.pix.height; pixel_format=f.fmt.pix.pixelformat;
+    struct v4l2_streamparm parm; memset(&parm,0,sizeof(parm)); parm.type=V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if (ctl(VIDIOC_G_PARM,&parm)==0 && parm.parm.capture.timeperframe.numerator && parm.parm.capture.timeperframe.denominator)
+        fps=(int)(parm.parm.capture.timeperframe.denominator/parm.parm.capture.timeperframe.numerator);
+    if (fps<1) fps=30;
     struct v4l2_requestbuffers rb; memset(&rb,0,sizeof(rb)); rb.count=UVC_BUFS; rb.type=f.type; rb.memory=V4L2_MEMORY_MMAP;
     if(ctl(VIDIOC_REQBUFS,&rb)<0 || rb.count<2 || rb.count>UVC_BUFS) { close_device(); return -1; }
     buf_count=rb.count;
     for(unsigned i=0;i<buf_count;i++) { struct v4l2_buffer b; memset(&b,0,sizeof(b)); b.type=f.type;b.memory=V4L2_MEMORY_MMAP;b.index=i; if(ctl(VIDIOC_QUERYBUF,&b)<0) {close_device();return -1;} bufs[i].len=b.length; bufs[i].data=mmap(NULL,b.length,PROT_READ|PROT_WRITE,MAP_SHARED,fd,b.m.offset); if(bufs[i].data==MAP_FAILED){bufs[i].data=NULL;close_device();return -1;} if(ctl(VIDIOC_QBUF,&b)<0){close_device();return -1;} }
+    encoder=uvc_encoder_create(width,height,fps,2000000,fps*2,pixel_format);
+    if (!encoder) { close_device(); return -1; }
     return 0;
 }
 void uvc_pipeline_destroy(void) { pthread_mutex_lock(&mtx); close_device(); pthread_mutex_unlock(&mtx); }
@@ -64,10 +73,12 @@ void *uvc_video_thread(void){
         pthread_mutex_lock(&mtx);
         if (b.index >= buf_count || b.bytesused > bufs[b.index].len) { pthread_mutex_unlock(&mtx); continue; }
         unsigned char *frame = bufs[b.index].data;
+        unsigned char *encoded=NULL; size_t encoded_len=0;
         if (pixel_format == V4L2_PIX_FMT_MJPEG) {
             unsigned char *n=realloc(last,b.bytesused); if(n){last=n;memcpy(last,frame,b.bytesused);last_len=b.bytesused;}
         }
-        for(int i=0;i<UVC_MAX_CHANNELS;i++) if(uvc_state[i].enable&&uvc_state[i].mainLoop&&uvc_vid_cb){hal_vidpack pack;hal_vidstream s;memset(&pack,0,sizeof(pack));pack.data=frame;pack.length=b.bytesused;pack.naluCnt=1;pack.nalu[0].length=b.bytesused;pack.timestamp=(uint64_t)b.timestamp.tv_sec*1000000+b.timestamp.tv_usec;s.pack=&pack;s.count=1;s.seq=0;uvc_vid_cb(i,&s);}
+        if (uvc_encoder_encode(encoder,frame,b.bytesused,(uint64_t)b.timestamp.tv_sec*1000000+b.timestamp.tv_usec,(const unsigned char **)&encoded,&encoded_len)<0) { pthread_mutex_unlock(&mtx); ctl(VIDIOC_QBUF,&b); continue; }
+        for(int i=0;i<UVC_MAX_CHANNELS;i++) if(uvc_state[i].enable&&uvc_state[i].mainLoop&&uvc_vid_cb){hal_vidpack pack;hal_vidstream s;memset(&pack,0,sizeof(pack));pack.data=encoded;pack.length=encoded_len;pack.naluCnt=1;pack.nalu[0].length=encoded_len;pack.timestamp=(uint64_t)b.timestamp.tv_sec*1000000+b.timestamp.tv_usec;s.pack=&pack;s.count=1;s.seq=0;uvc_vid_cb(i,&s);}
         pthread_mutex_unlock(&mtx);
         ctl(VIDIOC_QBUF,&b);
     } return NULL;
