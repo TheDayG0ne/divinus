@@ -2,6 +2,7 @@
 #include <stdatomic.h>
 #include <sys/utsname.h>
 #include <time.h>
+#include <sys/stat.h>
 
 IMPORT_STR(.rodata, "../res/onvif/capabilities.xml", capabilitiesxml);
 extern const char capabilitiesxml[];
@@ -42,8 +43,10 @@ static void onvif_init_identity(void) {
 
     if (onvif_uuid[0]) return;
     memset(seed, 0, sizeof(seed));
+    const char *uvc_device = getenv("UVC_DEVICE");
+    if (!uvc_device || !*uvc_device) uvc_device = "/dev/video0";
     if (uname(&host) == 0)
-        n += snprintf(seed + n, sizeof(seed) - n, "%s:%s:%s", host.nodename, host.machine, chip);
+        n += snprintf(seed + n, sizeof(seed) - n, "%s:%s:%s:%s", host.nodename, host.machine, chip, uvc_device);
     f = fopen("/etc/machine-id", "r");
     if (f) { n += fread(seed + n, 1, sizeof(seed) - n - 1, f); fclose(f); }
     if (!n) n = snprintf(seed, sizeof(seed), "%s:%s", family, sensor);
@@ -51,6 +54,11 @@ static void onvif_init_identity(void) {
     sha1_init(&ctx);
     sha1_update(&ctx, (unsigned char *)seed, n);
     sha1_final(digest, &ctx);
+    char idpath[PATH_MAX];
+    snprintf(idpath, sizeof(idpath), "/var/lib/divinus/uvc-%02x%02x%02x%02x.uuid", digest[0], digest[1], digest[2], digest[3]);
+    f = fopen(idpath, "r");
+    if (f && fscanf(f, "%36[0-9a-f-]", onvif_uuid) == 1) { fclose(f); return; }
+    if (f) fclose(f);
     snprintf(onvif_uuid, sizeof(onvif_uuid), "%02x%02x%02x%02x-%02x%02x-5%02x-%02x%02x-%02x%02x%02x%02x%02x%02x%02x%02x",
         digest[0],digest[1],digest[2],digest[3],digest[4],digest[5],digest[6],digest[7],digest[8],digest[9],digest[10],digest[11],digest[12],digest[13],digest[14],digest[15],digest[16],digest[17]);
     atomic_init(&onvif_message_seq, 0);
