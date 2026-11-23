@@ -28,6 +28,6 @@ int main(void) {
         } else if (r != -2) { uvc_encoder_destroy(e); free(yuyv); return 3; }
     }
     fclose(stream); uvc_encoder_destroy(e); free(yuyv);
-    if (!frames || !saw_sps || !saw_pps || !saw_idr) return 4;
+    if (!frames || !saw_sps || !saw_pps || !saw_idr) { fprintf(stderr,"frames=%d sps=%d pps=%d idr=%d\n",frames,saw_sps,saw_pps,saw_idr); return 4; }
     return 0;
 }
