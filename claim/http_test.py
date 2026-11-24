@@ -21,6 +21,8 @@ shadow.write_text(original)
 (root / 'www').mkdir()
 (root / 'www/index.html').write_text('external webui')
 (root / 'www/app.js').write_text('console.log(1)')
+(root / 'cameras.manifest').write_text('slot=1 rtsp_port=555\nslot=2 rtsp_port=556\n')
+(root / 'cameras.manifest').chmod(0o600)
 (root / 'outside.txt').write_text('outside')
 try:
     (root / 'www/outside-link').symlink_to(root / 'outside.txt')
@@ -80,12 +82,11 @@ try:
     status, body = request('GET', '/api/cameras')
     assert status == 200
     cameras = json.loads(body)
-    assert cameras['version'] == 1 and cameras['discovery'] == 'local-only'
-    camera, = cameras['cameras']
-    assert camera['id'] == 'local' and camera['status'] == 'unknown'
-    assert all(type(camera['capabilities'][name]) is bool for name in
-               ('snapshot_configured', 'mjpeg_configured', 'mp4_configured'))
-    assert camera['routes']['snapshot'] == '/image.jpg'
+    assert cameras['version'] == 1 and cameras['discovery'] == 'launcher-manifest'
+    assert cameras['cameras'] == [
+        {'id': 'camera-1', 'status': 'unknown', 'rtsp_port': 555},
+        {'id': 'camera-2', 'status': 'unknown', 'rtsp_port': 556},
+    ]
     assert request('GET', '/api/cameras?x=1', headers={'Origin': 'http://evil.example'})[0] == 403
     assert request('POST', '/api/cameras', headers={'Origin': 'http://evil.example'})[0] == 403
     assert request('GET', '/api/cameras?x=1')[0] == 400

@@ -21,6 +21,10 @@
 #define OPENWALL_CONFIG "/etc/openwall.conf"
 #endif
 
+#ifndef DIVINUS_CAMERA_MANIFEST
+#define DIVINUS_CAMERA_MANIFEST "/run/divinus/cameras.manifest"
+#endif
+
 IMPORT_STR(.rodata, "../res/setup.html", setuphtml);
 extern const char setuphtml[];
 
@@ -933,6 +937,44 @@ done:
     return ok ? 0 : -1;
 }
 
+#define CAMERA_MANIFEST_MAX 4
+
+typedef struct {
+    unsigned slot;
+    unsigned rtsp_port;
+} camera_manifest_entry_t;
+
+/* The launcher is the sole producer.  Accept only a small root-owned regular
+ * file with the deliberately boring `slot=N rtsp_port=P` format; in
+ * particular, never turn a client-controlled path into a filesystem access. */
+static int camera_manifest_load(camera_manifest_entry_t *entries, size_t *count) {
+    int fd = open(DIVINUS_CAMERA_MANIFEST, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    struct stat st;
+    char buf[1025], *line, *save;
+    size_t n = 0;
+    if (fd < 0) return -1;
+    if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_uid != 0 ||
+        (st.st_mode & 077) || st.st_size < 0 || st.st_size > 1024) {
+        close(fd); return -1;
+    }
+    ssize_t got = read(fd, buf, st.st_size);
+    close(fd);
+    if (got != st.st_size) return -1;
+    buf[got] = 0;
+    for (line = strtok_r(buf, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        unsigned slot, port;
+        char extra;
+        if (n == CAMERA_MANIFEST_MAX ||
+            sscanf(line, "slot=%u rtsp_port=%u %c", &slot, &port, &extra) != 2 ||
+            slot < 1 || slot > CAMERA_MANIFEST_MAX || port < 1 || port > 65535)
+            return -1;
+        for (size_t i = 0; i < n; i++) if (entries[i].slot == slot) return -1;
+        entries[n++] = (camera_manifest_entry_t){slot, port};
+    }
+    *count = n;
+    return 0;
+}
+
 void respond_request(http_request_t *req) {
     char response[8192] = {0};
     int respLen = 0;
@@ -1183,27 +1225,35 @@ void respond_request(http_request_t *req) {
         send_and_close(req->clntFd, response, respLen); return;
     }
 
-    /* This registry deliberately contains only the pipeline owned by this
-       process. It does not probe device nodes or claim a camera is online. */
+    /* Inventory comes only from the launcher's root-owned manifest.  Do not
+       inspect /dev: a node proves neither ownership nor a working stream. */
     if (EQUALS(req->uri, "/api/cameras")) {
+        camera_manifest_entry_t entries[CAMERA_MANIFEST_MAX];
+        size_t count = 0, used = 0;
         if (!EQUALS(req->method, "GET") || req->query) {
             send_http_error(req->clntFd, 400);
             return;
         }
-        respLen = snprintf(response, sizeof(response),
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: application/json; charset=UTF-8\r\n"
+        if (camera_manifest_load(entries, &count)) {
+            const char unavailable[] = "HTTP/1.1 503 Service Unavailable\r\n"
+                "Content-Type: application/json; charset=UTF-8\r\n"
+                "Cache-Control: no-store\r\nConnection: close\r\n\r\n"
+                "{\"error\":\"camera manifest unavailable\"}";
+            send_and_close(req->clntFd, (char *)unavailable, strlen(unavailable));
+            return;
+        }
+        used = (size_t)snprintf(response, sizeof(response),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=UTF-8\r\n"
             "Cache-Control: no-store\r\nConnection: close\r\n\r\n"
-            "{\"version\":1,\"discovery\":\"local-only\",\"cameras\":[{"
-            "\"id\":\"local\",\"status\":\"unknown\","
-            "\"capabilities\":{\"snapshot_configured\":%s,"
-            "\"mjpeg_configured\":%s,\"mp4_configured\":%s},"
-            "\"routes\":{\"snapshot\":\"/image.jpg\",\"mjpeg\":\"/mjpeg\","
-            "\"mp4\":\"/video.mp4\",\"settings\":\"/api/\"}}]}",
-            app_config.jpeg_enable ? "true" : "false",
-            app_config.mjpeg_enable ? "true" : "false",
-            app_config.mp4_enable ? "true" : "false");
-        send_and_close(req->clntFd, response, respLen);
+            "{\"version\":1,\"discovery\":\"launcher-manifest\",\"cameras\":[");
+        for (size_t i = 0; i < count && used < sizeof(response); i++) {
+            used += (size_t)snprintf(response + used, sizeof(response) - used,
+                "%s{\"id\":\"camera-%u\",\"status\":\"unknown\","
+                "\"rtsp_port\":%u}", i ? "," : "", entries[i].slot, entries[i].rtsp_port);
+        }
+        if (used >= sizeof(response)) { send_http_error(req->clntFd, 500); return; }
+        used += (size_t)snprintf(response + used, sizeof(response) - used, "]}");
+        send_and_close(req->clntFd, response, (ssize_t)used);
         return;
     }
 

@@ -5,4 +5,5 @@
 #define CLAIM_EULA_RECORD "/tmp/divinus-http-test/eula-accepted"
 #define OPENWALL_CONFIG "/tmp/divinus-http-test/openwall.conf"
 #define DIVINUS_STATIC_ROOT "/tmp/divinus-http-test/www"
+#define DIVINUS_CAMERA_MANIFEST "/tmp/divinus-http-test/cameras.manifest"
 #include "../src/server.c"
