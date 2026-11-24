@@ -3,6 +3,7 @@
 
 volatile char graceful = 0, keepRunning = 1;
 char chip[16] = "TEST";
+char family[32], sensor[16];
 struct AppConfig app_config;
 NetInfo netinfo;
 

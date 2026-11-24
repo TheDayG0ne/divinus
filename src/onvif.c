@@ -1,4 +1,5 @@
 #include "onvif.h"
+#include "../claim/claim.h"
 #include <stdatomic.h>
 #include <sys/utsname.h>
 #include <time.h>
@@ -162,6 +163,7 @@ void *onvif_thread(void) {
         if ((reqLen = recvfrom(servfd, request, sizeof(request) - 1, 0, (struct sockaddr *)&clntaddr, &clntsz)) < 0)
             continue;
 
+        if (claim_state("/etc/shadow") != 1) continue;
         request[reqLen] = '\0';
 #ifdef DEBUG_ONVIF
         HAL_INFO("onvif", "Received message: %s\n", msgbuf);

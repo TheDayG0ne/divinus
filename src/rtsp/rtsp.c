@@ -18,6 +18,7 @@
 #include "bufpool.h"
 #include <netinet/in.h>
 #include <sys/ioctl.h>
+#include "../../claim/claim.h"
 
 extern void request_idr();
 
@@ -789,6 +790,12 @@ static inline int __accept_proc_sock(rtsp_handle h, int server_fd, struct sock_s
             ASSERT(errno == EAGAIN, ({
                         ERR("accept:%s\n",strerror(errno));
                         return FAILURE;}));
+            return SUCCESS;
+        }
+
+        /* Never admit a client while ownership is absent or unreadable. */
+        if (claim_state("/etc/shadow") != 1) {
+            close(fd);
             return SUCCESS;
         }
 
