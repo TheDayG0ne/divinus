@@ -1,6 +1,6 @@
 # UVC JPEG cache tests
 
-Run `./tst/uvc-jpeg-api/run.sh` on Linux with a C compiler and V4L2 headers.
+Run `./test.sh uvc-jpeg-api` or `./tst/uvc-jpeg-api/run.sh` on Linux with a C compiler and V4L2 headers. The standalone script can be invoked from any working directory.
 These automatic unit tests need no camera. They cover cache ownership, empty and
 error buffers, JPEG markers, and timestamp validation. They do not test device
 I/O, public API concurrency, or unplug/reconnect: exercise those on a real camera.
