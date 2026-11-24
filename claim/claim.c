@@ -8,6 +8,39 @@
 #include <string.h>
 #include <unistd.h>
 
+int claim_state(const char *shadow_path)
+{
+    int fd, roots = 0, state = -1;
+    FILE *in;
+    struct stat st;
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t n;
+
+    if (!shadow_path) return -1;
+    fd = open(shadow_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return -1;
+    if (fstat(fd, &st) || !S_ISREG(st.st_mode)) { close(fd); return -1; }
+    in = fdopen(fd, "r");
+    if (!in) { close(fd); return -1; }
+    while ((n = getline(&line, &cap, in)) >= 0) {
+        if (memchr(line, '\0', (size_t)n)) { state = -1; goto done_state; }
+        if (!strncmp(line, "root:", 5)) {
+            char *end = strchr(line + 5, ':');
+            if (++roots != 1 || !end || !strchr(end, '\n')) {
+                state = -1;
+                goto done_state;
+            }
+            state = end != line + 5;
+        }
+    }
+    if (ferror(in) || roots != 1) state = -1;
+done_state:
+    free(line);
+    if (fclose(in)) state = -1;
+    return state;
+}
+
 int claim_set_hash(const char *shadow_path, const char *lock_path, const char *hash)
 {
     int lock = -1, fd = -1, result = -1, roots = 0, changed = 0;

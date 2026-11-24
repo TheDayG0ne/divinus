@@ -6,6 +6,11 @@ media gating, RTSP/ONVIF gating, or installation in this change. Do not deploy
 it as a security feature. The existing untracked `res/openipc-claim` draft is
 not part of this component or installed by it.
 
+`claim_state` reads a shadow file and reports empty, populated/locked, or an
+error. Missing, malformed, duplicate, non-regular, or unreadable shadow state
+must be treated as an error, not as claimed. This is only a snapshot; it does not
+protect an operation against later changes to shadow.
+
 `claim_set_hash` serializes cooperating claimants with a persistent flock file,
 checks the root shadow entry under the lock, and atomically replaces shadow only
 if its root password field is empty. Locked or populated fields count as already

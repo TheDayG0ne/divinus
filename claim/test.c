@@ -17,6 +17,8 @@ int main(void) {
     snprintf(shadow, sizeof shadow, "%s/shadow", dir);
     snprintf(lock, sizeof lock, "%s/lock", dir);
     put(shadow, "root::1:2:3:4:5:6:7\nuser:!:1:2:3:4:5:6:7\n");
+    assert(claim_state(shadow) == 0);
+    assert(claim_state("/nonexistent/divinus-shadow") == -1);
     assert(claim_set_hash(shadow, lock, "bad:hash") == -1);
     p = fork(); assert(p >= 0);
     if (!p) _exit(claim_set_hash(shadow, lock, "$6$salt$first"));
@@ -29,10 +31,15 @@ int main(void) {
     assert(fgets(buf, sizeof buf, f) && !strcmp(buf, "user:!:1:2:3:4:5:6:7\n")); fclose(f);
     put(shadow, "root:!:1:2:3:4:5:6:7\n");
     assert(claim_set_hash(shadow, lock, "$6$salt$hash") == 1);
+    assert(claim_state(shadow) == 1);
     put(shadow, "user::1:2:3:4:5:6:7\n");
+    assert(claim_state(shadow) == -1);
     assert(claim_set_hash(shadow, lock, "$6$salt$hash") == -1);
     put(shadow, "root::1:2:3:4:5:6:7\nroot::1:2:3:4:5:6:7\n");
     assert(claim_set_hash(shadow, lock, "$6$salt$hash") == -1);
+    assert(claim_state(shadow) == -1);
+    put(shadow, "root::1:2:3:4:5:6:7\nroot:!:1:2:3:4:5:6:7\n");
+    assert(claim_state(shadow) == -1);
     unlink(shadow); unlink(lock); rmdir(dir);
     puts("claim tests passed"); return 0;
 }
