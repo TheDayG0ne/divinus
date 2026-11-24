@@ -1075,6 +1075,10 @@ int sdk_start(void) {
         size_t stacksize;
         pthread_attr_getstacksize(&thread_attr, &stacksize);
         size_t new_stacksize = app_config.venc_stream_thread_stack_size;
+        /* FFmpeg's software encoder runs on this thread and needs more stack
+         * than the small default used by hardware encoder backends. */
+        if (plat == HAL_PLATFORM_UVC && new_stacksize < 1024 * 1024)
+            new_stacksize = 1024 * 1024;
         if (pthread_attr_setstacksize(&thread_attr, new_stacksize))
             HAL_DANGER("media", "Can't set stack size %zu\n", new_stacksize);
         if (pthread_create(
