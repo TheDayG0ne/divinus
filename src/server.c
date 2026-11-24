@@ -1,4 +1,64 @@
 #include "server.h"
+#include "../claim/claim.h"
+#include <crypt.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+
+#define CLAIM_SHADOW "/etc/shadow"
+#define CLAIM_LOCK "/run/openipc-claim.lock"
+
+static const char setup_page[] =
+    "<!doctype html><html><head><meta charset=\"utf-8\"><title>Camera setup</title></head>"
+    "<body><h1>Set the root password</h1>"
+    "<p>Use a private network: this page sends the password over unencrypted HTTP.</p>"
+    "<form method=\"post\" action=\"/setup\">"
+    "<label>Password <input type=\"password\" name=\"password\" minlength=\"12\" maxlength=\"128\" required></label>"
+    "<button type=\"submit\">Set password</button></form></body></html>";
+
+/* Decode exactly one form field; reject malformed escapes and embedded NULs. */
+static int setup_password(char *body, size_t len, char *out, size_t cap) {
+    static const char prefix[] = "password=";
+    size_t j = 0;
+    if (len < sizeof(prefix) - 1 || memcmp(body, prefix, sizeof(prefix) - 1)) return -1;
+    for (size_t i = sizeof(prefix) - 1; i < len; i++) {
+        unsigned char c = body[i];
+        if (c == '&' || c == 0) return -1;
+        if (c == '+') c = ' ';
+        else if (c == '%') {
+            int a, b;
+            if (i + 2 >= len) return -1;
+            char x = body[++i], y = body[++i];
+            a = x >= '0' && x <= '9' ? x - '0' : x >= 'a' && x <= 'f' ? x - 'a' + 10 : x >= 'A' && x <= 'F' ? x - 'A' + 10 : -1;
+            b = y >= '0' && y <= '9' ? y - '0' : y >= 'a' && y <= 'f' ? y - 'a' + 10 : y >= 'A' && y <= 'F' ? y - 'A' + 10 : -1;
+            if (a < 0 || b < 0) return -1;
+            c = (a << 4) | b;
+        }
+        if (c < 32 || c == 127 || j + 1 >= cap) return -1;
+        out[j++] = c;
+    }
+    out[j] = 0;
+    return j >= 12 ? 0 : -1;
+}
+
+static int setup_claim(const char *password) {
+    static const char alphabet[] = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    unsigned char random[16];
+    char salt[21] = "$6$";
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    size_t got = 0;
+    while (got < sizeof(random)) {
+        ssize_t n = read(fd, random + got, sizeof(random) - got);
+        if (n <= 0) { close(fd); return -1; }
+        got += n;
+    }
+    close(fd);
+    for (size_t i = 0; i < sizeof(random); i++) salt[i + 3] = alphabet[random[i] & 63];
+    salt[19] = '$'; salt[20] = 0;
+    char *hash = crypt(password, salt);
+    if (!hash || strncmp(hash, "$6$", 3)) return -1;
+    return claim_set_hash(CLAIM_SHADOW, CLAIM_LOCK, hash);
+}
 
 #define HTTP_MAX_CLIENTS 50
 #define HTTP_MIN_BUF_SIZE 4096
@@ -644,6 +704,50 @@ void respond_request(http_request_t *req) {
 
     if (!EQUALS(req->method, "GET") && !EQUALS(req->method, "POST")) {
         send_http_error(req->clntFd, 405);
+        return;
+    }
+
+    /* Fail closed when shadow cannot be read. Setup is the only HTTP door
+       before ownership; other protocols require their own independent gate. */
+    int ownership = claim_state(CLAIM_SHADOW);
+    if (ownership < 0) {
+        send_http_error(req->clntFd, 500);
+        return;
+    }
+    if (EQUALS(req->uri, "/setup.html") || EQUALS(req->uri, "/setup")) {
+        if (ownership != 0) { send_http_error(req->clntFd, 403); return; }
+        if (EQUALS(req->method, "GET")) { send_html(req->clntFd, setup_page); return; }
+        if (!EQUALS(req->uri, "/setup")) { send_http_error(req->clntFd, 405); return; }
+        if (cross_site_request()) { send_http_error(req->clntFd, 403); return; }
+        /* Until EULA presentation and acceptance are implemented, never bypass it. */
+        struct stat eula;
+        if (stat("/usr/share/openipc/eula/eula.en.txt", &eula) == 0 || errno != ENOENT) {
+            send_http_error(req->clntFd, 403); return;
+        }
+        const char *content_type = request_header("Content-Type");
+        const char *length = request_header("Content-Length");
+        char *end;
+        long size = length ? strtol(length, &end, 10) : -1;
+        if (!length || *end || size != req->paysize || size <= 0 || size > 1024 ||
+            request_header("Transfer-Encoding") || !content_type ||
+            strcasecmp(content_type, "application/x-www-form-urlencoded")) {
+            send_http_error(req->clntFd, 400); return;
+        }
+        char password[129] = {0};
+        if (setup_password(req->payload, size, password, sizeof(password))) {
+            memset(password, 0, sizeof(password));
+            send_http_error(req->clntFd, 400); return;
+        }
+        int result = setup_claim(password);
+        memset(password, 0, sizeof(password));
+        if (result != 0) { send_http_error(req->clntFd, result == 1 ? 403 : 500); return; }
+        send_html(req->clntFd, "<!doctype html><title>Setup complete</title><p>Password set. Sign in using your configured services.</p>");
+        return;
+    }
+    if (!ownership) {
+        if (EQUALS(req->method, "GET") && EQUALS(req->uri, "/"))
+            send_html(req->clntFd, setup_page);
+        else send_http_error(req->clntFd, 403);
         return;
     }
 

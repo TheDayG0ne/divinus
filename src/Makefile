@@ -1,4 +1,4 @@
-SRC = $(shell find ./ -name '*.c')
+SRC = $(shell find ./ -name '*.c') ../claim/claim.c
 OBJ = ../divinus
 GIT_REV := $(shell git rev-parse --short HEAD)$(shell git diff --quiet HEAD || echo "-mod")
 
@@ -6,7 +6,7 @@ GIT_REV := $(shell git rev-parse --short HEAD)$(shell git diff --quiet HEAD || e
 divinus: $(OBJ)
 
 $(OBJ): $(SRC:%.c=%.o)
-	$(CC) $^ -rdynamic $(OPT) -DGIT_REV=\"$(GIT_REV)\" $(FFMPEG_LIBS) -o $@
+	$(CC) $^ -rdynamic $(OPT) -DGIT_REV=\"$(GIT_REV)\" $(FFMPEG_LIBS) -lcrypt -o $@
 
 ifdef UVC_FFMPEG
 FFMPEG_CFLAGS := $(shell pkg-config --cflags libavcodec libavutil libswscale)
