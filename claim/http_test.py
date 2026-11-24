@@ -94,19 +94,34 @@ try:
     assert request('GET', '/api/openwall', headers={'Origin': 'http://evil.example'})[0] == 403
     assert json.loads(request('GET', '/api/openwall')[1]) == {'enabled': False, 'interval': 60, 'caption': '', 'camera': 0}
     ow_headers = {'Content-Type': 'application/x-www-form-urlencoded', 'X-OpenWall-Request': '1'}
-    form = urlencode({'enabled': 1, 'interval': 30, 'caption': 'Камера "1"', 'camera': 0})
+    for method in ('PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'):
+        assert request(method, '/api/openwall')[0] == 405
+    form = urlencode({'enabled': 0, 'interval': 30, 'caption': 'Камера "1"', 'camera': 0})
+    enabled_form = form.replace('enabled=0', 'enabled=1')
+    status, body = request('POST', '/api/openwall', enabled_form, ow_headers)
+    assert status == 409 and b'not implemented' in body
+    assert not (root / 'openwall.conf').exists()
     assert request('POST', '/api/openwall', form, {'Content-Type': ow_headers['Content-Type']})[0] == 403
     assert request('POST', '/api/openwall', form, dict(ow_headers, Origin='http://evil.example'))[0] == 403
     assert request('POST', '/api/openwall?x=1', form, ow_headers)[0] == 400
     assert request('POST', '/api/openwall', form, ow_headers)[0] == 200
     config = root / 'openwall.conf'
     assert config.stat().st_uid == 0 and config.stat().st_mode & 0o777 == 0o600
-    assert json.loads(request('GET', '/api/openwall')[1]) == {'enabled': True, 'interval': 30, 'caption': 'Камера "1"', 'camera': 0}
+    assert json.loads(request('GET', '/api/openwall')[1]) == {'enabled': False, 'interval': 30, 'caption': 'Камера "1"', 'camera': 0}
+    assert request('POST', '/api/openwall', enabled_form, ow_headers)[0] == 409
+    assert config.read_text() == form
+    for length in ('+' + str(len(form)), str(len(form)) + 'junk'):
+        assert request('POST', '/api/openwall', form, dict(ow_headers, **{'Content-Length': length}))[0] == 400
+        assert config.read_text() == form
     for bad in (form + '&enabled=0', form.replace('interval=30', 'interval=10'),
                 form.replace('camera=0', 'camera=1'), form + '&unknown=1',
-                form.replace('enabled=1', 'enabled=2'), form + '&'):
+                form.replace('enabled=0', 'enabled=2'), form + '&'):
         assert request('POST', '/api/openwall', bad, ow_headers)[0] == 400
         assert config.read_text() == form
+    config.write_text(enabled_form)
+    assert request('GET', '/api/openwall')[0] == 500
+    assert request('POST', '/api/openwall', form, ow_headers)[0] == 200
+    assert config.read_text() == form
     saved_shadow = shadow.read_text()
     shadow.write_text('root:!:1:2:3:4:5:6:7\n')
     assert request('GET', '/')[0] == 401

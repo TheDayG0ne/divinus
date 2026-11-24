@@ -895,7 +895,8 @@ static int openwall_load(openwall_config_t *c) {
         (st.st_mode & 077) || st.st_size <= 0 || st.st_size > 1024) { close(fd); return -1; }
     ssize_t n = read(fd, buf, st.st_size);
     close(fd);
-    return n == st.st_size ? openwall_form(buf, n, c) : -1;
+    if (n != st.st_size || openwall_form(buf, n, c) || c->enabled) return -1;
+    return 0;
 }
 
 static int openwall_save(const char *body, size_t len) {
@@ -913,6 +914,18 @@ static int openwall_save(const char *body, size_t len) {
     if (close(fd)) { fd = -1; goto done; }
     fd = -1;
     if (rename(path, OPENWALL_CONFIG)) goto done;
+    /* Persist the directory entry as well as the file contents. */
+    char parent[] = OPENWALL_CONFIG;
+    char *slash = strrchr(parent, '/');
+    if (slash) {
+        if (slash == parent) slash[1] = 0;
+        else *slash = 0;
+    } else strcpy(parent, ".");
+    int dirfd = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dirfd < 0) goto done;
+    int sync_result = fsync(dirfd);
+    int close_result = close(dirfd);
+    if (sync_result || close_result) goto done;
     ok = 1;
 done:
     if (fd >= 0) close(fd);
@@ -927,7 +940,10 @@ void respond_request(http_request_t *req) {
     if (req->clntFd < 0) return;
 
     if (!EQUALS(req->method, "GET") && !EQUALS(req->method, "POST")) {
-        send_http_error(req->clntFd, 405);
+        if (EQUALS(req->uri, "/api/openwall")) {
+            const char denied[] = "HTTP/1.1 405 Method Not Allowed\r\nAllow: GET, POST\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            send_and_close(req->clntFd, denied, strlen(denied));
+        } else send_http_error(req->clntFd, 405);
         return;
     }
 
@@ -1137,12 +1153,21 @@ void respond_request(http_request_t *req) {
             const char *token = request_header("X-OpenWall-Request");
             const char *type = request_header("Content-Type");
             const char *length = request_header("Content-Length");
-            char *end; long size = length ? strtol(length, &end, 10) : -1;
+            size_t size = 0;
             if (!token || strcmp(token, "1")) { send_http_error(req->clntFd, 403); return; }
-            if (!length || *end || size != req->paysize || size <= 0 || size > 1024 ||
+            if (!length || !*length) { send_http_error(req->clntFd, 400); return; }
+            for (const char *p = length; *p; p++) {
+                if (*p < '0' || *p > '9' || size > 1024) { send_http_error(req->clntFd, 400); return; }
+                size = size * 10 + (*p - '0');
+            }
+            if (size == 0 || size > 1024 || size != req->paysize ||
                 request_header("Transfer-Encoding") || !type ||
                 strcasecmp(type, "application/x-www-form-urlencoded") ||
                 openwall_form(req->payload, size, &cfg)) { send_http_error(req->clntFd, 400); return; }
+            if (cfg.enabled) {
+                const char denied[] = "HTTP/1.1 409 Conflict\r\nContent-Type: text/plain; charset=UTF-8\r\nCache-Control: no-store\r\nConnection: close\r\n\r\nOpenWall sender and scheduler are not implemented\n";
+                send_and_close(req->clntFd, denied, strlen(denied)); return;
+            }
             if (openwall_save(req->payload, size)) { send_http_error(req->clntFd, 500); return; }
         } else if (openwall_load(&cfg)) { send_http_error(req->clntFd, 500); return; }
         char escaped[259]; size_t j = 0;
