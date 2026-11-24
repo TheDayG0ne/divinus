@@ -17,6 +17,10 @@
 #define DIVINUS_STATIC_ROOT "/var/www"
 #endif
 
+#ifndef OPENWALL_CONFIG
+#define OPENWALL_CONFIG "/etc/openwall.conf"
+#endif
+
 IMPORT_STR(.rodata, "../res/setup.html", setuphtml);
 extern const char setuphtml[];
 
@@ -840,6 +844,82 @@ static bool cross_site_request(void) {
     return from && names_another_host(from, request_header("Host"));
 }
 
+/* OpenWall stores only validated settings, never credentials or images. */
+typedef struct { int enabled, interval, camera; char caption[129]; } openwall_config_t;
+
+static int openwall_form(const char *body, size_t len, openwall_config_t *c) {
+    unsigned seen = 0;
+    size_t pos = 0;
+    memset(c, 0, sizeof(*c));
+    while (pos < len) {
+        size_t end = pos, eq;
+        while (end < len && body[end] != '&') end++;
+        for (eq = pos; eq < end && body[eq] != '='; eq++);
+        char value[129]; unsigned bit;
+        if (eq == end || setup_value(body + eq + 1, end - eq - 1, value, sizeof(value))) return -1;
+        size_t n = eq - pos;
+        if (n == 7 && !memcmp(body + pos, "enabled", n)) {
+            bit = 1; if (strcmp(value, "0") && strcmp(value, "1")) return -1;
+            c->enabled = value[0] - '0';
+        } else if (n == 8 && !memcmp(body + pos, "interval", n)) {
+            bit = 2;
+            if (strcmp(value, "15") && strcmp(value, "30") && strcmp(value, "60") && strcmp(value, "120")) return -1;
+            c->interval = atoi(value);
+        } else if (n == 7 && !memcmp(body + pos, "caption", n)) {
+            size_t count; bit = 4;
+            if (setup_utf8_chars((unsigned char *)value, strlen(value), &count)) return -1;
+            strcpy(c->caption, value);
+        } else if (n == 6 && !memcmp(body + pos, "camera", n)) {
+            bit = 8;
+            /* The registry currently exposes only camera index 0. */
+            if (strcmp(value, "0")) return -1;
+        } else return -1;
+        if (seen & bit) return -1;
+        seen |= bit;
+        if (end == len) break;
+        pos = end + 1;
+        if (pos == len) return -1;
+    }
+    return seen == 15 ? 0 : -1;
+}
+
+static int openwall_load(openwall_config_t *c) {
+    int fd = open(OPENWALL_CONFIG, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        if (errno != ENOENT) return -1;
+        *c = (openwall_config_t){ .interval = 60 };
+        return 0;
+    }
+    struct stat st; char buf[1025];
+    if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_uid != 0 ||
+        (st.st_mode & 077) || st.st_size <= 0 || st.st_size > 1024) { close(fd); return -1; }
+    ssize_t n = read(fd, buf, st.st_size);
+    close(fd);
+    return n == st.st_size ? openwall_form(buf, n, c) : -1;
+}
+
+static int openwall_save(const char *body, size_t len) {
+    char path[] = OPENWALL_CONFIG ".tmp.XXXXXX";
+    int fd = mkstemp(path), ok = 0;
+    if (fd < 0) return -1;
+    if (fchmod(fd, 0600) || fchown(fd, 0, 0)) goto done;
+    size_t pos = 0;
+    while (pos < len) {
+        ssize_t n = write(fd, body + pos, len - pos);
+        if (n <= 0) goto done;
+        pos += n;
+    }
+    if (fsync(fd)) goto done;
+    if (close(fd)) { fd = -1; goto done; }
+    fd = -1;
+    if (rename(path, OPENWALL_CONFIG)) goto done;
+    ok = 1;
+done:
+    if (fd >= 0) close(fd);
+    if (!ok) unlink(path);
+    return ok ? 0 : -1;
+}
+
 void respond_request(http_request_t *req) {
     char response[8192] = {0};
     int respLen = 0;
@@ -1036,6 +1116,46 @@ void respond_request(http_request_t *req) {
          (req->query || !EQUALS(req->method, "GET")))) && cross_site_request()) {
         send_http_error(req->clntFd, 403);
         return;
+    }
+
+    if (EQUALS(req->uri, "/api/openwall")) {
+        /* Require root shadow auth even on platforms with optional web auth. */
+        if (!shadow_auth_basic(CLAIM_SHADOW, request_header("Authorization"))) {
+            char denied[] = "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"Access the camera services\"\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
+            send_and_close(req->clntFd, denied, strlen(denied)); return;
+        }
+        const char *origin = request_header("Origin");
+        const char *referer = request_header("Referer");
+        if (cross_site_request() ||
+            (origin && (strncasecmp(origin, "http://", 7) || names_another_host(origin, request_header("Host")))) ||
+            (!origin && referer && (strncasecmp(referer, "http://", 7) || names_another_host(referer, request_header("Host"))))) {
+            send_http_error(req->clntFd, 403); return;
+        }
+        if (req->query) { send_http_error(req->clntFd, 400); return; }
+        openwall_config_t cfg;
+        if (EQUALS(req->method, "POST")) {
+            const char *token = request_header("X-OpenWall-Request");
+            const char *type = request_header("Content-Type");
+            const char *length = request_header("Content-Length");
+            char *end; long size = length ? strtol(length, &end, 10) : -1;
+            if (!token || strcmp(token, "1")) { send_http_error(req->clntFd, 403); return; }
+            if (!length || *end || size != req->paysize || size <= 0 || size > 1024 ||
+                request_header("Transfer-Encoding") || !type ||
+                strcasecmp(type, "application/x-www-form-urlencoded") ||
+                openwall_form(req->payload, size, &cfg)) { send_http_error(req->clntFd, 400); return; }
+            if (openwall_save(req->payload, size)) { send_http_error(req->clntFd, 500); return; }
+        } else if (openwall_load(&cfg)) { send_http_error(req->clntFd, 500); return; }
+        char escaped[259]; size_t j = 0;
+        for (size_t i = 0; cfg.caption[i]; i++) {
+            if (cfg.caption[i] == '\\' || cfg.caption[i] == '"') escaped[j++] = '\\';
+            escaped[j++] = cfg.caption[i];
+        }
+        escaped[j] = 0;
+        respLen = snprintf(response, sizeof(response),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=UTF-8\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+            "{\"enabled\":%s,\"interval\":%d,\"caption\":\"%s\",\"camera\":%d}",
+            cfg.enabled ? "true" : "false", cfg.interval, escaped, cfg.camera);
+        send_and_close(req->clntFd, response, respLen); return;
     }
 
     /* This registry deliberately contains only the pipeline owned by this

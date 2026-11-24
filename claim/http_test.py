@@ -40,6 +40,8 @@ def request(method, path, body=None, headers=None):
 
 try:
     time.sleep(1)
+    assert request('GET', '/api/openwall')[0] == 403
+    assert request('POST', '/api/openwall')[0] == 403
     assert request('GET', '/api/cameras')[0] == 403
     assert request('GET', '/setup.html')[0] == 200
     assert request('GET', '/eula.en.txt')[1].startswith(b'Majestic EULA')
@@ -88,6 +90,23 @@ try:
     assert request('POST', '/api/cameras', headers={'Origin': 'http://evil.example'})[0] == 403
     assert request('GET', '/api/cameras?x=1')[0] == 400
     assert request('POST', '/api/cameras')[0] == 400
+    assert request('GET', '/api/openwall', headers={'Authorization': ''})[0] == 401
+    assert request('GET', '/api/openwall', headers={'Origin': 'http://evil.example'})[0] == 403
+    assert json.loads(request('GET', '/api/openwall')[1]) == {'enabled': False, 'interval': 60, 'caption': '', 'camera': 0}
+    ow_headers = {'Content-Type': 'application/x-www-form-urlencoded', 'X-OpenWall-Request': '1'}
+    form = urlencode({'enabled': 1, 'interval': 30, 'caption': 'Камера "1"', 'camera': 0})
+    assert request('POST', '/api/openwall', form, {'Content-Type': ow_headers['Content-Type']})[0] == 403
+    assert request('POST', '/api/openwall', form, dict(ow_headers, Origin='http://evil.example'))[0] == 403
+    assert request('POST', '/api/openwall?x=1', form, ow_headers)[0] == 400
+    assert request('POST', '/api/openwall', form, ow_headers)[0] == 200
+    config = root / 'openwall.conf'
+    assert config.stat().st_uid == 0 and config.stat().st_mode & 0o777 == 0o600
+    assert json.loads(request('GET', '/api/openwall')[1]) == {'enabled': True, 'interval': 30, 'caption': 'Камера "1"', 'camera': 0}
+    for bad in (form + '&enabled=0', form.replace('interval=30', 'interval=10'),
+                form.replace('camera=0', 'camera=1'), form + '&unknown=1',
+                form.replace('enabled=1', 'enabled=2'), form + '&'):
+        assert request('POST', '/api/openwall', bad, ow_headers)[0] == 400
+        assert config.read_text() == form
     saved_shadow = shadow.read_text()
     shadow.write_text('root:!:1:2:3:4:5:6:7\n')
     assert request('GET', '/')[0] == 401
