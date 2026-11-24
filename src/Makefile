@@ -14,6 +14,8 @@ FFMPEG_LIBS := $(shell pkg-config --libs libavcodec libavutil libswscale)
 hal/uvc_encoder.o: override OPT += $(FFMPEG_CFLAGS) -DUVC_HAVE_FFMPEG
 endif
 
+server.o: ../res/setup.html ../res/index.html ../res/onvif/badauth.xml
+
 %.o: %.c Makefile
 	$(CC) -c $< $(OPT) -DGIT_REV=\"$(GIT_REV)\" -o $@
 

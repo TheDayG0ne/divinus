@@ -463,9 +463,9 @@
 				<p class="hint" id="l-rootnote">This is the camera's <strong>root</strong> password — the one password it has. The web interface, SSH, RTSP and ONVIF all check it.</p>
 			</div>
 			<label for="password" id="l-pw">Password</label>
-			<input id="password" name="password" type="password" autocomplete="new-password" minlength="8" required>
+			<input id="password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>
 			<label for="confirm" id="l-cf">Confirm password</label>
-			<input id="confirm" name="confirm" type="password" autocomplete="new-password" minlength="8" required>
+			<input id="confirm" name="confirm" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>
 			<label class="check"><input id="show" type="checkbox"> <span id="l-show">Show password</span></label>
 
 			<!-- Shown only once the camera has said it receives the field. A
