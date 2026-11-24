@@ -107,7 +107,9 @@ int network_start(void) {
     if (app_config.mdns_enable && netinfo.count)
         mdns_start();
 
-    if (app_config.onvif_enable)
+    /* ONVIF discovery advertises the HTTP endpoint, so it is unavailable
+       in worker mode where web_port 0 disables the web server. */
+    if (app_config.web_port && app_config.onvif_enable)
         start_onvif();
 
     pthread_attr_t thread_attr;
@@ -138,7 +140,7 @@ void network_stop(void) {
     if (app_config.mdns_enable)
         mdns_stop();
 
-    if (app_config.onvif_enable)
+    if (app_config.web_port && app_config.onvif_enable)
         stop_onvif();
 }
 
