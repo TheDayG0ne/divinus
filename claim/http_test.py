@@ -29,7 +29,7 @@ server = subprocess.Popen(['/tmp/http-test'])
 
 def request(method, path, body=None, headers=None):
     headers = dict(headers or {})
-    headers.setdefault('Authorization', 'Basic ' + base64.b64encode(b'admin:secret').decode())
+    headers.setdefault('Authorization', 'Basic ' + base64.b64encode(b'root:abcdefgh').decode())
     conn = http.client.HTTPConnection('127.0.0.1', 18081, timeout=3)
     conn.request(method, path, body, headers)
     response = conn.getresponse()
@@ -69,6 +69,13 @@ try:
     assert request('POST', '/setup', password + '&eula=accepted&eula_lang=en', headers)[0] == 200
     assert shadow.read_text() != original
     assert (root / 'eula-accepted').read_text().startswith('1.0 en web ')
+    assert request('GET', '/', headers={'Authorization': ''})[0] == 401
+    assert request('GET', '/', headers={'Authorization': 'Basic cm9vdDpiYWQ='})[0] == 401
+    assert request('GET', '/api/status', headers={'Authorization': ''})[0] == 401
+    saved_shadow = shadow.read_text()
+    shadow.write_text('root:!:1:2:3:4:5:6:7\n')
+    assert request('GET', '/')[0] == 401
+    shadow.write_text(saved_shadow)
     assert request('GET', '/')[1] == b'external webui'
     assert request('GET', '/app.js')[1] == b'console.log(1)'
     assert request('GET', '/missing.js')[0] == 400

@@ -1,4 +1,5 @@
 #include "server.h"
+#include "shadow_auth.h"
 #include "../claim/claim.h"
 #include <crypt.h>
 #include <fcntl.h>
@@ -917,6 +918,18 @@ void respond_request(http_request_t *req) {
         return;
     }
 
+#if defined(__linux__) && (defined(__i386__) || defined(__x86_64__))
+    /* ONVIF retains its independent authentication pending protocol work. */
+    if (!(app_config.onvif_enable && STARTS_WITH(req->uri, "/onvif")) &&
+        !shadow_auth_basic(CLAIM_SHADOW, request_header("Authorization"))) {
+        char denied[] = "HTTP/1.1 401 Unauthorized\r\n"
+            "WWW-Authenticate: Basic realm=\"Access the camera services\"\r\n"
+            "Content-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
+        send_and_close(req->clntFd, denied, strlen(denied));
+        return;
+    }
+#endif
+
     if (app_config.onvif_enable && STARTS_WITH(req->uri, "/onvif")) {
         char *path = req->uri + 6;
         if (*path == '/') path++;
@@ -987,6 +1000,7 @@ void respond_request(http_request_t *req) {
         return;
     }
 
+#if !defined(__linux__) || (!defined(__i386__) && !defined(__x86_64__))
     if (app_config.web_enable_auth) {
         bool should_skip_auth = false;
 
@@ -1023,6 +1037,7 @@ void respond_request(http_request_t *req) {
         }
     }
 
+#endif
     /* Any /api/ request that can change something: parameters in the query,
        or a body (/api/osd/N takes an image as a multipart POST with none). */
     if ((EQUALS(req->uri, "/exit") ||

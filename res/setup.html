@@ -460,7 +460,7 @@
 			<p class="hint">This sets the system root password only; Divinus service credentials are configured separately. Use at least 8 characters.</p>
 			<div class="note">
 				<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
-				<p class="hint" id="l-rootnote">This is the camera's <strong>root</strong> password — the one password it has. The web interface, SSH, RTSP and ONVIF all check it.</p>
+				<p class="hint" id="l-rootnote">This is the camera's <strong>root</strong> password, used by the web interface and SSH. RTSP and ONVIF use separate settings and may be unsecured.</p>
 			</div>
 			<label for="password" id="l-pw">Password</label>
 			<input id="password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required>
@@ -567,7 +567,7 @@
 					continue_: 'Continue',
 					lede: 'Choose a password. It claims the camera and starts the streams.',
 					lede0: 'This camera has not been set up yet. Choose a password to claim it.',
-					rootnote: ['This is the camera’s ', 'root', ' password — the one password it has. The web interface, SSH, RTSP and ONVIF all check it.'],
+					rootnote: ['This is the camera’s ', 'root', ' password, used by the web interface and SSH. RTSP and ONVIF use separate settings and may be unsecured.'],
 					pw: 'Password', cf: 'Confirm password', show: 'Show password',
 					sshtitle: 'Add an SSH public key', optional: 'Optional',
 					sshlabel: 'Public key',
@@ -593,7 +593,7 @@
 					continue_: 'Продолжить',
 					lede: 'Задайте пароль. Это закрепит камеру за вами и запустит вещание.',
 					lede0: 'Камера ещё не настроена. Задайте пароль, чтобы закрепить её за собой.',
-					rootnote: ['Это пароль ', 'root', ' — единственный пароль камеры. Его проверяют веб-интерфейс, SSH, RTSP и ONVIF.'],
+					rootnote: ['Это пароль ', 'root', ' для веб-интерфейса и SSH. RTSP и ONVIF используют отдельные настройки и могут быть не защищены.'],
 					pw: 'Пароль', cf: 'Повторите пароль', show: 'Показать пароль',
 					sshtitle: 'Добавить открытый ключ SSH', optional: 'Необязательно',
 					sshlabel: 'Открытый ключ',
@@ -619,7 +619,7 @@
 					continue_: '继续',
 					lede: '设置密码。此操作将认领摄像机并开始推流。',
 					lede0: '本摄像机尚未设置。请设置密码以认领它。',
-					rootnote: ['这是摄像机的 ', 'root', ' 密码 — 它唯一的密码。网页界面、SSH、RTSP 和 ONVIF 都使用它。'],
+					rootnote: ['这是摄像机的 ', 'root', ' 密码，用于网页界面和 SSH。RTSP 和 ONVIF 使用独立设置，可能未受保护。'],
 					pw: '密码', cf: '确认密码', show: '显示密码',
 					sshtitle: '添加 SSH 公钥', optional: '可选',
 					sshlabel: '公钥',

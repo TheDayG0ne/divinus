@@ -102,7 +102,8 @@ cat <<'EOF'
 
 This camera has not been set up yet. It streams nothing and answers nothing
 until root has a password -- set one now to finish setting it up. The same
-password is used by the web interface, SSH, RTSP and ONVIF.
+password is used by the x86 web interface and SSH. RTSP and ONVIF use
+separate settings and may be unsecured.
 
 EOF
 
