@@ -5,7 +5,7 @@ This document describes the fields that can be found within a configuration file
 ## System section
 
 - **sensor_config**: Path to the sensor calibration or configuration file, if applicable (e.g., `/etc/sensors/imx415.bin`).
-- **web_port**: Port number for the web server (default: `80`).
+- **web_port**: Port number for the web server (default: `80`). Set to `0` for a worker process without an HTTP listener; RTSP/media remain available.
 - **web_whitelist**: Array of up to 4 IP addresses or domains allowed to access the web server.
 - **web_enable_auth**: Boolean to enable authentication on the API, live stream and WebUI endpoints (default: `false`).
 - **web_auth_user**: Username for basic authentication (default: `admin`).

@@ -73,7 +73,10 @@ int main(int argc, char *argv[]) {
 
     network_start();
 
-    server_start();
+    /* web_port 0 is an explicit worker mode: keep media/RTSP alive without
+       opening an HTTP listener. */
+    if (app_config.web_port)
+        server_start();
 
     if (app_config.rtsp_enable) {
         rtspHandle = rtsp_create(RTSP_MAXIMUM_CONNECTIONS, app_config.rtsp_port, 1);
@@ -139,7 +142,8 @@ int main(int argc, char *argv[]) {
         HAL_INFO("rtsp", "Server has closed!\n");
     }
 
-    server_stop();
+    if (app_config.web_port)
+        server_stop();
 
     network_stop();
 
