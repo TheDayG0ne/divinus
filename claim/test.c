@@ -40,6 +40,15 @@ int main(void) {
     assert(claim_state(shadow) == -1);
     put(shadow, "root::1:2:3:4:5:6:7\nroot:!:1:2:3:4:5:6:7\n");
     assert(claim_state(shadow) == -1);
+    put(shadow, "root::\n");
+    assert(claim_state(shadow) == -1);
+    assert(claim_set_hash(shadow, lock, "$6$salt$hash") == -1);
+    put(shadow, "root:$6$salt$hash:1:2:3:4:5:6\n");
+    assert(claim_state(shadow) == -1);
+    assert(claim_set_hash(shadow, lock, "$6$salt$hash") == -1);
+    put(shadow, "root::1:2:3:4:5:6:7:extra\n");
+    assert(claim_state(shadow) == -1);
+    assert(claim_set_hash(shadow, lock, "$6$salt$hash") == -1);
     unlink(shadow); unlink(lock); rmdir(dir);
     puts("claim tests passed"); return 0;
 }

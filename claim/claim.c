@@ -8,6 +8,20 @@
 #include <string.h>
 #include <unistd.h>
 
+/* A shadow entry has exactly nine colon-separated fields and a newline.
+ * Reject truncated records rather than interpreting them as an ownership state. */
+static int valid_root_line(const char *line, ssize_t n)
+{
+    int colons = 0;
+    ssize_t i;
+    if (n <= 0 || line[n - 1] != '\n') return 0;
+    for (i = 0; i < n - 1; ++i) {
+        if (line[i] == ':') ++colons;
+        if (line[i] == '\r' || line[i] == '\n') return 0;
+    }
+    return colons == 8;
+}
+
 int claim_state(const char *shadow_path)
 {
     int fd, roots = 0, state = -1;
@@ -27,7 +41,7 @@ int claim_state(const char *shadow_path)
         if (memchr(line, '\0', (size_t)n)) { state = -1; goto done_state; }
         if (!strncmp(line, "root:", 5)) {
             char *end = strchr(line + 5, ':');
-            if (++roots != 1 || !end || !strchr(end, '\n')) {
+            if (++roots != 1 || !end || !valid_root_line(line, n)) {
                 state = -1;
                 goto done_state;
             }
@@ -70,7 +84,7 @@ int claim_set_hash(const char *shadow_path, const char *lock_path, const char *h
         if (memchr(line, '\0', (size_t)n)) goto done;
         if (!strncmp(line, "root:", 5)) {
             char *end = strchr(line + 5, ':');
-            if (++roots != 1 || !end || !strchr(end, '\n')) goto done;
+            if (++roots != 1 || !end || !valid_root_line(line, n)) goto done;
             if (end != line + 5) {
                 if (fwrite(line, 1, n, out) != (size_t)n) goto done;
             } else {
