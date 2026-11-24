@@ -1,0 +1,11 @@
+# Camera registry: first stage
+
+`GET /api/cameras` returns a version 1 JSON registry for the single pipeline owned by this Divinus process. `local` is a logical ID, not a persistent hardware identity. No device enumeration, probing or network discovery is performed; the list does not imply that a physical camera is connected. `status: unknown` is intentional: the current backend does not expose a reliable per-camera liveness signal. The `*_configured` booleans reflect configuration only, not backend support, readiness, or a guarantee that frames are available. Routes are the existing same-origin endpoints, not new per-camera aliases; they may fail or be disabled. `/api/` denotes the existing settings namespace, not itself a settings endpoint. Existing single-camera URLs remain unchanged.
+
+The endpoint is read-only, rejects queries and POSTs, sends `Cache-Control: no-store`, and runs after the existing claim, HTTP authentication and CSRF checks. Authentication policy remains platform-specific, exactly as for other HTTP endpoints. Do not expose it as a public inventory on installations where HTTP authentication is disabled.
+
+## Next architectural blocker
+
+This is not multi-camera discovery or a stream mux. The media pipeline, UVC capture/encoder, JPEG state and HTTP subscribers currently contain process-wide state and do not identify a source. Implement isolated per-camera lifecycle and frame/encoder state, stable identities across reconnects, synchronized status and per-camera subscriber routing before advertising additional cameras or per-camera routes. Discovery must be restricted to administrator-configured local devices, resolve identity safely across hotplug, avoid opening arbitrary client-supplied paths or URLs, and distinguish inaccessible, disconnected and live devices. It must not leak credentials or provide SSRF. Apply the existing claim/auth/CSRF gates to every new route; define capability semantics from actual backend support and configuration, and test reconnection, concurrent clients and isolation on Linux with real or simulated devices before enabling it.
+
+The HTTP integration regression lives in `claim/http_test.py`; run `claim/http_test.sh` in `src` after a Linux native build, as documented in that script.

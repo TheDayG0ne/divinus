@@ -1,4 +1,5 @@
 import http.client
+import json
 import pathlib
 import subprocess
 import time
@@ -39,6 +40,7 @@ def request(method, path, body=None, headers=None):
 
 try:
     time.sleep(1)
+    assert request('GET', '/api/cameras')[0] == 403
     assert request('GET', '/setup.html')[0] == 200
     assert request('GET', '/eula.en.txt')[1].startswith(b'Majestic EULA')
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
@@ -72,6 +74,20 @@ try:
     assert request('GET', '/', headers={'Authorization': ''})[0] == 401
     assert request('GET', '/', headers={'Authorization': 'Basic cm9vdDpiYWQ='})[0] == 401
     assert request('GET', '/api/status', headers={'Authorization': ''})[0] == 401
+    assert request('GET', '/api/cameras', headers={'Authorization': ''})[0] == 401
+    status, body = request('GET', '/api/cameras')
+    assert status == 200
+    cameras = json.loads(body)
+    assert cameras['version'] == 1 and cameras['discovery'] == 'local-only'
+    camera, = cameras['cameras']
+    assert camera['id'] == 'local' and camera['status'] == 'unknown'
+    assert all(type(camera['capabilities'][name]) is bool for name in
+               ('snapshot_configured', 'mjpeg_configured', 'mp4_configured'))
+    assert camera['routes']['snapshot'] == '/image.jpg'
+    assert request('GET', '/api/cameras?x=1', headers={'Origin': 'http://evil.example'})[0] == 403
+    assert request('POST', '/api/cameras', headers={'Origin': 'http://evil.example'})[0] == 403
+    assert request('GET', '/api/cameras?x=1')[0] == 400
+    assert request('POST', '/api/cameras')[0] == 400
     saved_shadow = shadow.read_text()
     shadow.write_text('root:!:1:2:3:4:5:6:7\n')
     assert request('GET', '/')[0] == 401

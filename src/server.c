@@ -1038,6 +1038,30 @@ void respond_request(http_request_t *req) {
         return;
     }
 
+    /* This registry deliberately contains only the pipeline owned by this
+       process. It does not probe device nodes or claim a camera is online. */
+    if (EQUALS(req->uri, "/api/cameras")) {
+        if (!EQUALS(req->method, "GET") || req->query) {
+            send_http_error(req->clntFd, 400);
+            return;
+        }
+        respLen = snprintf(response, sizeof(response),
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json; charset=UTF-8\r\n"
+            "Cache-Control: no-store\r\nConnection: close\r\n\r\n"
+            "{\"version\":1,\"discovery\":\"local-only\",\"cameras\":[{"
+            "\"id\":\"local\",\"status\":\"unknown\","
+            "\"capabilities\":{\"snapshot_configured\":%s,"
+            "\"mjpeg_configured\":%s,\"mp4_configured\":%s},"
+            "\"routes\":{\"snapshot\":\"/image.jpg\",\"mjpeg\":\"/mjpeg\","
+            "\"mp4\":\"/video.mp4\",\"settings\":\"/api/\"}}]}",
+            app_config.jpeg_enable ? "true" : "false",
+            app_config.mjpeg_enable ? "true" : "false",
+            app_config.mp4_enable ? "true" : "false");
+        send_and_close(req->clntFd, response, respLen);
+        return;
+    }
+
     if (EQUALS(req->uri, "/exit")) {
         respLen = sprintf(response,
             "HTTP/1.1 200 OK\r\n"
