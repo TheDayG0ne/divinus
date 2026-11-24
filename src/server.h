@@ -31,6 +31,8 @@
 #include "region.h"
 #include "watchdog.h"
 
+extern int central_only_mode;
+extern int server_failed;
 int server_start();
 int server_stop();
 

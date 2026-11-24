@@ -4,12 +4,19 @@
 #include <crypt.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/sysinfo.h>
 #include <limits.h>
 
 #ifndef CLAIM_SHADOW
 #define CLAIM_SHADOW "/etc/shadow"
+#endif
+#ifndef CLAIM_LOCK
 #define CLAIM_LOCK "/run/openipc-claim.lock"
+#endif
+#ifndef CLAIM_EULA_DIR
 #define CLAIM_EULA_DIR "/usr/share/openipc/eula"
+#endif
+#ifndef CLAIM_EULA_RECORD
 #define CLAIM_EULA_RECORD "/etc/eula-accepted"
 #endif
 
@@ -234,6 +241,7 @@ const http_error_t http_errors[] = {
 http_header_t http_headers[17] = {{"\0", "\0"}};
 
 int server_fd = -1;
+int server_failed = 0;
 pthread_t server_thread_id;
 pthread_mutex_t client_fds_mutex;
 
@@ -981,7 +989,7 @@ void respond_request(http_request_t *req) {
 
     if (req->clntFd < 0) return;
 
-    if (!EQUALS(req->method, "GET") && !EQUALS(req->method, "POST")) {
+    if (!central_only_mode && !EQUALS(req->method, "GET") && !EQUALS(req->method, "POST")) {
         if (EQUALS(req->uri, "/api/openwall")) {
             const char denied[] = "HTTP/1.1 405 Method Not Allowed\r\nAllow: GET, POST\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
             send_and_close(req->clntFd, denied, strlen(denied));
@@ -1013,9 +1021,10 @@ void respond_request(http_request_t *req) {
             close(fd); close_socket_fd(req->clntFd); return;
         }
     }
-    if (EQUALS(req->uri, "/setup.html") || EQUALS(req->uri, "/setup")) {
+    if ((!central_only_mode || !ownership) && (EQUALS(req->uri, "/setup.html") || EQUALS(req->uri, "/setup"))) {
         if (ownership != 0) { send_http_error(req->clntFd, 403); return; }
         if (EQUALS(req->method, "GET")) { send_html(req->clntFd, setuphtml); return; }
+        if (!EQUALS(req->method, "POST")) { send_http_error(req->clntFd, 405); return; }
         if (!EQUALS(req->uri, "/setup")) { send_http_error(req->clntFd, 405); return; }
         if (cross_site_request()) { send_http_error(req->clntFd, 403); return; }
         int eula_fd = setup_eula_open("en");
@@ -1067,6 +1076,46 @@ void respond_request(http_request_t *req) {
         return;
     }
 #endif
+
+    if (central_only_mode) {
+        /* This is an allowlist, not a prefix-based API denylist: unknown
+           legacy routes must never fall through to media or HAL handlers. */
+        if (!EQUALS(req->method, "GET") || req->query) {
+            send_http_error(req->clntFd, 404); return;
+        }
+        /* Reject non-canonical paths before static lookup: strtok_r in
+           send_file otherwise collapses repeated and trailing slashes. */
+        size_t uri_len = strlen(req->uri);
+        if (strstr(req->uri, "//") || (uri_len > 1 && req->uri[uri_len - 1] == '/') ||
+            EQUALS(req->uri, "/setup") || EQUALS(req->uri, "/setup.html")) {
+            send_http_error(req->clntFd, 404); return;
+        }
+        if (EQUALS(req->uri, "/api/status")) {
+            struct sysinfo si;
+            if (sysinfo(&si)) { send_http_error(req->clntFd, 500); return; }
+            respLen = snprintf(response, sizeof(response),
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+                "{\"mode\":\"central-only\",\"uptime_seconds\":%ld}", si.uptime);
+            send_and_close(req->clntFd, response, respLen); return;
+        }
+        if (!EQUALS(req->uri, "/api/cameras")) {
+            if (EQUALS(req->uri, "/") || EQUALS(req->uri, "/index.htm") || EQUALS(req->uri, "/index.html")) {
+                const char *path = EQUALS(req->uri, "/") ? "/index.html" : req->uri;
+                if (app_config.web_enable_static && send_file(req->clntFd, path)) return;
+                send_http_error(req->clntFd, 404); return;
+            }
+            /* Static files are the only remaining permitted surface. Reserve
+               namespaces even if a matching file exists in the web root. */
+            if (!STARTS_WITH(req->uri, "/api") && !STARTS_WITH(req->uri, "/onvif") &&
+                !EQUALS(req->uri, "/exit") && !EQUALS(req->uri, "/audio.mp3") &&
+                !EQUALS(req->uri, "/audio.pcm") && !EQUALS(req->uri, "/video.264") &&
+                !EQUALS(req->uri, "/video.265") && !EQUALS(req->uri, "/video.mp4") &&
+                !EQUALS(req->uri, "/mjpeg") && !STARTS_WITH(req->uri, "/image.jpg") &&
+                app_config.web_enable_static &&
+                send_file(req->clntFd, req->uri)) return;
+            send_http_error(req->clntFd, 404); return;
+        }
+    }
 
     if (app_config.onvif_enable && STARTS_WITH(req->uri, "/onvif")) {
         char *path = req->uri + 6;
@@ -2185,16 +2234,19 @@ void *server_thread(void *vargp) {
         .sin_port = htons(app_config.web_port),
         .sin_addr.s_addr = htonl(INADDR_ANY)
     };
-    if (ret = bind(server_fd, (struct sockaddr *)&server, sizeof(server))) {
+    if (!central_only_mode && (ret = bind(server_fd, (struct sockaddr *)&server, sizeof(server)))) {
         HAL_DANGER("server", "%s (%d)\n", strerror(errno), errno);
         keepRunning = 0;
         close_socket_fd(server_fd);
         return NULL;
     }
-    listen(server_fd, 128);
+    if (!central_only_mode) listen(server_fd, 128);
 
     struct pollfd fds[HTTP_MAX_CLIENTS + 1];
     http_request_t reqs[HTTP_MAX_CLIENTS];
+    /* Absolute monotonic deadlines bound both incomplete headers and bodies,
+       even if a client keeps sending bytes. Used only in central-only mode. */
+    struct timespec deadlines[HTTP_MAX_CLIENTS];
 
     for (int i = 0; i < HTTP_MAX_CLIENTS; i++) {
         fds[i + 1].fd = -1;
@@ -2209,6 +2261,12 @@ void *server_thread(void *vargp) {
         int poll_count = poll(fds, HTTP_MAX_CLIENTS + 1, 1000);
         if (poll_count < 0) {
             if (errno == EINTR) continue;
+            if (central_only_mode) { server_failed = 1; keepRunning = 0; }
+            break;
+        }
+        if (central_only_mode && (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL))) {
+            if (keepRunning) server_failed = 1;
+            keepRunning = 0;
             break;
         }
 
@@ -2224,6 +2282,14 @@ void *server_thread(void *vargp) {
                         fds[i+1].fd = clntFd;
                         fds[i+1].events = POLLIN;
                         reqs[i].clntFd = clntFd;
+                        if (central_only_mode) {
+                            if (clock_gettime(CLOCK_MONOTONIC, &deadlines[i])) {
+                                close_socket_fd(clntFd);
+                                fds[i+1].fd = -1;
+                                break;
+                            }
+                            deadlines[i].tv_sec += 10;
+                        }
                         reqs[i].total = 0;
                         reqs[i].buf_size = HTTP_MIN_BUF_SIZE;
                         reqs[i].input = malloc(reqs[i].buf_size + 1);
@@ -2238,8 +2304,18 @@ void *server_thread(void *vargp) {
             }
         }
 
+        struct timespec now;
+        int clock_failed = central_only_mode && clock_gettime(CLOCK_MONOTONIC, &now);
         for (int i = 0; i < HTTP_MAX_CLIENTS; i++) {
             if (fds[i + 1].fd != -1) {
+                if (central_only_mode && (clock_failed || now.tv_sec > deadlines[i].tv_sec ||
+                    (now.tv_sec == deadlines[i].tv_sec && now.tv_nsec >= deadlines[i].tv_nsec))) {
+                    close_socket_fd(fds[i + 1].fd);
+                    fds[i + 1].fd = -1;
+                    free(reqs[i].input);
+                    reqs[i].input = NULL;
+                    continue;
+                }
                 if (fds[i + 1].revents & (POLLERR | POLLHUP | POLLNVAL)) {
                     close_socket_fd(fds[i + 1].fd);
                     fds[i + 1].fd = -1;
@@ -2327,7 +2403,7 @@ void *server_thread(void *vargp) {
         }
     }
 
-    close_socket_fd(server_fd);
+    if (!central_only_mode) close_socket_fd(server_fd);
     HAL_INFO("server", "Thread has exited\n");
     return NULL;
 }
@@ -2340,6 +2416,19 @@ int server_start() {
     pthread_mutex_init(&client_fds_mutex, NULL);
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (central_only_mode) {
+        int enable = 1;
+        struct sockaddr_in address = { .sin_family = AF_INET,
+            .sin_port = htons(app_config.web_port), .sin_addr.s_addr = htonl(INADDR_ANY) };
+        if (server_fd < 0 || setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) ||
+            bind(server_fd, (struct sockaddr *)&address, sizeof(address)) || listen(server_fd, 128)) {
+            HAL_DANGER("server", "Cannot start HTTP listener: %s\n", strerror(errno));
+            if (server_fd >= 0) close(server_fd);
+            server_fd = -1;
+            pthread_mutex_destroy(&client_fds_mutex);
+            return EXIT_FAILURE;
+        }
+    }
 
     {
         pthread_attr_t thread_attr;
@@ -2350,8 +2439,15 @@ int server_start() {
         if (pthread_attr_setstacksize(&thread_attr, new_stacksize))
             HAL_WARNING("server", "Can't set stack size %zu\n", new_stacksize);
         if (pthread_create(
-            &server_thread_id, &thread_attr, server_thread, (void *)&server_fd))
+            &server_thread_id, &thread_attr, server_thread, (void *)&server_fd)) {
+            pthread_attr_destroy(&thread_attr);
+            if (central_only_mode) {
+                close(server_fd);
+                server_fd = -1;
+                pthread_mutex_destroy(&client_fds_mutex);
+            }
             HAL_ERROR("server", "Starting the server thread failed!\n");
+        }
         if (pthread_attr_setstacksize(&thread_attr, stacksize))
             HAL_DANGER("server", "Can't set stack size %zu\n", stacksize);
         pthread_attr_destroy(&thread_attr);
@@ -2363,8 +2459,13 @@ int server_start() {
 int server_stop() {
     keepRunning = 0;
 
-    close_socket_fd(server_fd);
+    if (!central_only_mode)
+        close_socket_fd(server_fd);
     pthread_join(server_thread_id, NULL);
+    if (central_only_mode) {
+        close(server_fd);
+        server_fd = -1;
+    }
 
     pthread_mutex_destroy(&client_fds_mutex);
     HAL_INFO("server", "Shutting down server...\n");

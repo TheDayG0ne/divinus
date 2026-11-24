@@ -15,8 +15,15 @@
 #include <string.h>
 #include <unistd.h>
 
+#if defined(__linux__) && (defined(__i386__) || defined(__x86_64__))
+#define CENTRAL_ONLY_SUPPORTED 1
+#else
+#define CENTRAL_ONLY_SUPPORTED 0
+#endif
+
 rtsp_handle rtspHandle;
 volatile char graceful = 0, keepRunning = 1;
+int central_only_mode = 0;
 
 void handle_error(int signo) {
     char msg[64];
@@ -56,29 +63,45 @@ int main(int argc, char *argv[]) {
         sigaction(SIGPIPE, &sa, NULL);
     }
 
-    hal_identify();
+    if (argc == 2 && !strcmp(argv[1], "--central-only")) {
+#if CENTRAL_ONLY_SUPPORTED
+        central_only_mode = 1;
+#else
+        fprintf(stderr, "--central-only requires Linux x86\n");
+        return EXIT_FAILURE;
+#endif
+    }
 
-    if (!*family)
-        HAL_ERROR("hal", "Unsupported chip family! Quitting...\n");
+    if (!central_only_mode) {
+        hal_identify();
 
-    fprintf(stderr, "%s Divinus (rev %s) for %s %s\n",
-        HAL_COLOR("\033[0m\033[7m"), GIT_REV, family, HAL_COLOR("\033[0m"));
-    fprintf(stderr, "Chip ID: %s\n", chip);
+        if (!*family)
+            HAL_ERROR("hal", "Unsupported chip family! Quitting...\n");
+
+        fprintf(stderr, "%s Divinus (rev %s) for %s %s\n",
+            HAL_COLOR("\033[0m\033[7m"), GIT_REV, family, HAL_COLOR("\033[0m"));
+        fprintf(stderr, "Chip ID: %s\n", chip);
+    } else fprintf(stderr, "Divinus (rev %s), central-only Linux x86\n", GIT_REV);
 
     if (app_config_parse() != CONFIG_OK)
         HAL_ERROR("hal", "Can't load app config 'divinus.yaml'\n");
 
-    if (app_config.watchdog)
+    if (!central_only_mode && app_config.watchdog)
         watchdog_start(app_config.watchdog);
 
-    network_start();
+    if (!central_only_mode)
+        network_start();
 
     /* web_port 0 is an explicit worker mode: keep media/RTSP alive without
        opening an HTTP listener. */
-    if (app_config.web_port)
-        server_start();
+    if (central_only_mode && !app_config.web_port) {
+        fprintf(stderr, "central-only requires a nonzero web_port\n");
+        return EXIT_FAILURE;
+    }
+    if (app_config.web_port && server_start() && central_only_mode)
+        return EXIT_FAILURE;
 
-    if (app_config.rtsp_enable) {
+    if (!central_only_mode && app_config.rtsp_enable) {
         rtspHandle = rtsp_create(RTSP_MAXIMUM_CONNECTIONS, app_config.rtsp_port, 1);
         rtsp_latch_audio_codec();
         HAL_INFO("rtsp", "Started listening for clients...\n");
@@ -96,48 +119,50 @@ int main(int argc, char *argv[]) {
 #endif
     }
 
-    if (app_config.stream_enable)
-        media_start();
+    if (!central_only_mode) {
+        if (app_config.stream_enable)
+            media_start();
+        if (sdk_start())
+            HAL_ERROR("hal", "Failed to start SDK!\n");
+    }
 
-    if (sdk_start())
-        HAL_ERROR("hal", "Failed to start SDK!\n");
-
-    if (app_config.night_mode_enable)
+    if (!central_only_mode && app_config.night_mode_enable)
         night_enable();
 
-    if (app_config.http_post_enable)
+    if (!central_only_mode && app_config.http_post_enable)
         http_post_start();
 
-    if (app_config.osd_enable)
+    if (!central_only_mode && app_config.osd_enable)
         region_start();
 
-    if (app_config.record_enable && app_config.record_continuous)
+    if (!central_only_mode && app_config.record_enable && app_config.record_continuous)
         record_start();
 
     while (keepRunning) {
-        if (app_config.rtsp_enable) rtsp_tick(rtspHandle);
-        watchdog_reset();
+        if (!central_only_mode && app_config.rtsp_enable) rtsp_tick(rtspHandle);
+        if (!central_only_mode) watchdog_reset();
         sleep(1);
     }
 
-    if (app_config.record_enable && app_config.record_continuous)
+    if (!central_only_mode && app_config.record_enable && app_config.record_continuous)
         record_stop();
 
-    if (app_config.http_post_enable)
+    if (!central_only_mode && app_config.http_post_enable)
         http_post_stop();
 
-    if (app_config.osd_enable)
+    if (!central_only_mode && app_config.osd_enable)
         region_stop();
 
-    if (app_config.night_mode_enable)
+    if (!central_only_mode && app_config.night_mode_enable)
         night_disable();
 
-    sdk_stop();
+    if (!central_only_mode) {
+        sdk_stop();
+        if (app_config.stream_enable)
+            media_stop();
+    }
 
-    if (app_config.stream_enable)
-        media_stop();
-
-    if (app_config.rtsp_enable) {
+    if (!central_only_mode && app_config.rtsp_enable) {
         rtsp_finish(rtspHandle);
         HAL_INFO("rtsp", "Server has closed!\n");
     }
@@ -145,19 +170,24 @@ int main(int argc, char *argv[]) {
     if (app_config.web_port)
         server_stop();
 
-    network_stop();
+    if (!central_only_mode)
+        network_stop();
 
-    if (app_config.watchdog)
+    if (!central_only_mode && app_config.watchdog)
         watchdog_stop();
 
-    if (!graceful)
+    if (!graceful && !central_only_mode)
         app_config_restore();
 
-    if (graceful) {
+    if (graceful && !(central_only_mode && server_failed)) {
         fprintf(stderr, "Restarting...\n");
         execvp(argv[0], argv);
+        if (central_only_mode) {
+            perror("execvp");
+            return EXIT_FAILURE;
+        }
     }
 
     fprintf(stderr, "Main thread is shutting down...\n");
-    return EXIT_SUCCESS;
+    return central_only_mode && server_failed ? EXIT_FAILURE : EXIT_SUCCESS;
 }
