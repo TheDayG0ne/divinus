@@ -1,5 +1,6 @@
 #include "uvc_hal.h"
 #include "uvc_encoder.h"
+#include "uvc_jpeg_cache.h"
 #include <linux/videodev2.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -18,17 +19,21 @@ static int input_stride, fps=30;
 static struct uvc_buf bufs[UVC_BUFS];
 static struct uvc_encoder *encoder;
 static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
-static unsigned char *last; static size_t last_len; static uint64_t last_monotonic_us;
+static struct uvc_jpeg_cache cache;
+#define last cache.data
+#define last_len cache.length
+#define last_monotonic_us cache.captured_us
 hal_chnstate uvc_state[UVC_MAX_CHANNELS];
 int (*uvc_vid_cb)(char, hal_vidstream*);
 
 static int ctl(unsigned long req, void *arg) { int r; do r=ioctl(fd,req,arg); while(r<0 && errno==EINTR); return r; }
 static void close_device(void) {
+    pixel_format=0;
+    uvc_jpeg_cache_clear(&cache);
     if (fd < 0) return;
     if (streaming) { enum v4l2_buf_type t=V4L2_BUF_TYPE_VIDEO_CAPTURE; ctl(VIDIOC_STREAMOFF,&t); streaming=0; }
     for (int i=0;i<UVC_BUFS;i++) if (bufs[i].data) { munmap(bufs[i].data,bufs[i].len); bufs[i].data=NULL; bufs[i].len=0; }
     close(fd); fd=-1; buf_count=0; uvc_encoder_destroy(encoder); encoder=NULL;
-    free(last); last=NULL; last_len=0; last_monotonic_us=0;
 }
 
 static uint64_t monotonic_us(void) {
@@ -40,8 +45,8 @@ static uint64_t monotonic_us(void) {
 uvc_jpeg_result uvc_jpeg_get(unsigned int max_age_ms, size_t max_length,
     uvc_jpeg_frame *out) {
     uint64_t now, age;
-    if (!out || !max_age_ms || !max_length) return UVC_JPEG_INVALID;
-    memset(out, 0, sizeof(*out));
+    if (!out || out->data || out->length || out->captured_monotonic_us ||
+        !max_age_ms || !max_length) return UVC_JPEG_INVALID;
     pthread_mutex_lock(&mtx);
     if (pixel_format == V4L2_PIX_FMT_YUYV) {
         pthread_mutex_unlock(&mtx);
@@ -142,8 +147,14 @@ void *uvc_video_thread(void){
         if (b.index >= buf_count || b.bytesused > bufs[b.index].len) { close_device(); pthread_mutex_unlock(&mtx); continue; }
         unsigned char *frame = bufs[b.index].data;
         unsigned char *encoded=NULL; size_t encoded_len=0;
-        if (pixel_format == V4L2_PIX_FMT_MJPEG) {
-            unsigned char *n=realloc(last,b.bytesused); if(n){last=n;memcpy(last,frame,b.bytesused);last_len=b.bytesused;last_monotonic_us=monotonic_us();}
+        if (pixel_format == V4L2_PIX_FMT_MJPEG &&
+            !uvc_jpeg_cache_update(&cache, &b, frame, monotonic_us())) {
+            if(ctl(VIDIOC_QBUF,&b)<0) close_device();
+            pthread_mutex_unlock(&mtx); continue;
+        }
+        if ((b.flags & V4L2_BUF_FLAG_ERROR) || !b.bytesused) {
+            if(ctl(VIDIOC_QBUF,&b)<0) close_device();
+            pthread_mutex_unlock(&mtx); continue;
         }
         if (uvc_encoder_encode(encoder,frame,b.bytesused,(uint64_t)b.timestamp.tv_sec*1000000+b.timestamp.tv_usec,(const unsigned char **)&encoded,&encoded_len)<0) { if(ctl(VIDIOC_QBUF,&b)<0) close_device(); pthread_mutex_unlock(&mtx); continue; }
         unsigned char *callback_frame=malloc(encoded_len);

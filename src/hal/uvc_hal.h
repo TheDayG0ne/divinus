@@ -25,7 +25,12 @@ typedef enum {
     UVC_JPEG_UNSUPPORTED = -5
 } uvc_jpeg_result;
 
-/* max_age_ms and max_length are required limits; output is owned by the caller. */
+/* out must point to a zero-initialized or released descriptor. On success it
+ * owns data until release; release before reuse. On failure out is unchanged.
+ * Limits must be nonzero. Calls serialize with capture, including poll (up to
+ * 250 ms), device ioctls, encoding and copies; there is no latency bound.
+ * Disconnect invalidates the cache only after the capture thread detects it;
+ * until then age is the only freshness bound. */
 uvc_jpeg_result uvc_jpeg_get(unsigned int max_age_ms, size_t max_length,
     uvc_jpeg_frame *out);
 void uvc_jpeg_frame_release(uvc_jpeg_frame *frame);
