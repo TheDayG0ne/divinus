@@ -18,7 +18,7 @@ static int input_stride, fps=30;
 static struct uvc_buf bufs[UVC_BUFS];
 static struct uvc_encoder *encoder;
 static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
-static unsigned char *last; static size_t last_len;
+static unsigned char *last; static size_t last_len; static uint64_t last_monotonic_us;
 hal_chnstate uvc_state[UVC_MAX_CHANNELS];
 int (*uvc_vid_cb)(char, hal_vidstream*);
 
@@ -27,7 +27,56 @@ static void close_device(void) {
     if (fd < 0) return;
     if (streaming) { enum v4l2_buf_type t=V4L2_BUF_TYPE_VIDEO_CAPTURE; ctl(VIDIOC_STREAMOFF,&t); streaming=0; }
     for (int i=0;i<UVC_BUFS;i++) if (bufs[i].data) { munmap(bufs[i].data,bufs[i].len); bufs[i].data=NULL; bufs[i].len=0; }
-    close(fd); fd=-1; buf_count=0; uvc_encoder_destroy(encoder); encoder=NULL; free(last); last=NULL; last_len=0;
+    close(fd); fd=-1; buf_count=0; uvc_encoder_destroy(encoder); encoder=NULL;
+    free(last); last=NULL; last_len=0; last_monotonic_us=0;
+}
+
+static uint64_t monotonic_us(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
+
+uvc_jpeg_result uvc_jpeg_get(unsigned int max_age_ms, size_t max_length,
+    uvc_jpeg_frame *out) {
+    uint64_t now, age;
+    if (!out || !max_age_ms || !max_length) return UVC_JPEG_INVALID;
+    memset(out, 0, sizeof(*out));
+    pthread_mutex_lock(&mtx);
+    if (pixel_format == V4L2_PIX_FMT_YUYV) {
+        pthread_mutex_unlock(&mtx);
+        return UVC_JPEG_UNSUPPORTED;
+    }
+    if (!last || !last_len || !last_monotonic_us) {
+        pthread_mutex_unlock(&mtx);
+        return UVC_JPEG_NO_FRAME;
+    }
+    now = monotonic_us();
+    age = now >= last_monotonic_us ? now - last_monotonic_us : UINT64_MAX;
+    if (age > (uint64_t)max_age_ms * 1000ULL) {
+        pthread_mutex_unlock(&mtx);
+        return UVC_JPEG_STALE;
+    }
+    if (last_len > max_length) {
+        pthread_mutex_unlock(&mtx);
+        return UVC_JPEG_TOO_LARGE;
+    }
+    out->data = malloc(last_len);
+    if (!out->data) {
+        pthread_mutex_unlock(&mtx);
+        return UVC_JPEG_INVALID;
+    }
+    memcpy(out->data, last, last_len);
+    out->length = last_len;
+    out->captured_monotonic_us = last_monotonic_us;
+    pthread_mutex_unlock(&mtx);
+    return UVC_JPEG_OK;
+}
+
+void uvc_jpeg_frame_release(uvc_jpeg_frame *frame) {
+    if (!frame) return;
+    free(frame->data);
+    memset(frame, 0, sizeof(*frame));
 }
 int uvc_hal_init(void) { memset(uvc_state,0,sizeof(uvc_state)); return 0; }
 void uvc_hal_deinit(void) { uvc_pipeline_destroy(); }
@@ -94,7 +143,7 @@ void *uvc_video_thread(void){
         unsigned char *frame = bufs[b.index].data;
         unsigned char *encoded=NULL; size_t encoded_len=0;
         if (pixel_format == V4L2_PIX_FMT_MJPEG) {
-            unsigned char *n=realloc(last,b.bytesused); if(n){last=n;memcpy(last,frame,b.bytesused);last_len=b.bytesused;}
+            unsigned char *n=realloc(last,b.bytesused); if(n){last=n;memcpy(last,frame,b.bytesused);last_len=b.bytesused;last_monotonic_us=monotonic_us();}
         }
         if (uvc_encoder_encode(encoder,frame,b.bytesused,(uint64_t)b.timestamp.tv_sec*1000000+b.timestamp.tv_usec,(const unsigned char **)&encoded,&encoded_len)<0) { if(ctl(VIDIOC_QBUF,&b)<0) close_device(); pthread_mutex_unlock(&mtx); continue; }
         unsigned char *callback_frame=malloc(encoded_len);

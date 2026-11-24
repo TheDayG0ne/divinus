@@ -4,8 +4,31 @@
 #include "globals.h"
 #include "tools.h"
 #include <pthread.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #define UVC_MAX_CHANNELS 8
+
+/* Caller-owned copy of a fresh MJPEG frame from the existing pipeline. */
+typedef struct {
+    unsigned char *data;
+    size_t length;
+    uint64_t captured_monotonic_us;
+} uvc_jpeg_frame;
+
+typedef enum {
+    UVC_JPEG_OK = 0,
+    UVC_JPEG_INVALID = -1,
+    UVC_JPEG_NO_FRAME = -2,
+    UVC_JPEG_STALE = -3,
+    UVC_JPEG_TOO_LARGE = -4,
+    UVC_JPEG_UNSUPPORTED = -5
+} uvc_jpeg_result;
+
+/* max_age_ms and max_length are required limits; output is owned by the caller. */
+uvc_jpeg_result uvc_jpeg_get(unsigned int max_age_ms, size_t max_length,
+    uvc_jpeg_frame *out);
+void uvc_jpeg_frame_release(uvc_jpeg_frame *frame);
 
 extern hal_chnstate uvc_state[UVC_MAX_CHANNELS];
 extern int (*uvc_vid_cb)(char, hal_vidstream*);
