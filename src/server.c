@@ -3,12 +3,17 @@
 #include <crypt.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <limits.h>
 
 #ifndef CLAIM_SHADOW
 #define CLAIM_SHADOW "/etc/shadow"
 #define CLAIM_LOCK "/run/openipc-claim.lock"
 #define CLAIM_EULA_DIR "/usr/share/openipc/eula"
 #define CLAIM_EULA_RECORD "/etc/eula-accepted"
+#endif
+
+#ifndef DIVINUS_STATIC_ROOT
+#define DIVINUS_STATIC_ROOT "/var/www"
 #endif
 
 IMPORT_STR(.rodata, "../res/setup.html", setuphtml);
@@ -622,42 +627,74 @@ struct jpegtask {
     uint8_t color2Gray;
 };
 
-int send_file(const int client_fd, const char *path) {
-    if (!access(path, F_OK)) {
-        const char *mime = (path);
-        FILE *file = fopen(path, "r");
-        if (file == NULL) {
-            close_socket_fd(client_fd);
-            return EXIT_SUCCESS;
-        }
-        char header[1024];
-        int header_len = sprintf(header,
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: %s\r\n"
-            "Transfer-Encoding: chunked\r\n"
-            "Connection: keep-alive\r\n\r\n", mime);
-        send_to_fd(client_fd, header, header_len); // zero ending string!
-        const int buf_size = 1024;
-        char buf[buf_size + 2];
-        char len_buf[50];
-        ssize_t len_size;
-        while (1) {
-            ssize_t size = fread(buf, sizeof(char), buf_size, file);
-            if (size <= 0) break;
-            len_size = sprintf(len_buf, "%zX\r\n", size);
-            buf[size++] = '\r';
-            buf[size++] = '\n';
-            if (send_to_fd(client_fd, len_buf, len_size) < 0) break;
-            if (send_to_fd(client_fd, buf, size) < 0) break;
-        }
-        char end[] = "0\r\n\r\n";
-        send_to_fd(client_fd, end, sizeof(end) - 1);
-        fclose(file);
-        close_socket_fd(client_fd);
-        return EXIT_FAILURE;
-    }
+static const char *static_mime(const char *path) {
+    const char *ext = strrchr(path, '.');
+    if (!ext) return "application/octet-stream";
+    if (!strcasecmp(ext, ".html") || !strcasecmp(ext, ".htm")) return "text/html; charset=utf-8";
+    if (!strcasecmp(ext, ".css")) return "text/css; charset=utf-8";
+    if (!strcasecmp(ext, ".js")) return "application/javascript; charset=utf-8";
+    if (!strcasecmp(ext, ".json")) return "application/json; charset=utf-8";
+    if (!strcasecmp(ext, ".svg")) return "image/svg+xml";
+    if (!strcasecmp(ext, ".png")) return "image/png";
+    if (!strcasecmp(ext, ".jpg") || !strcasecmp(ext, ".jpeg")) return "image/jpeg";
+    if (!strcasecmp(ext, ".gif")) return "image/gif";
+    if (!strcasecmp(ext, ".ico")) return "image/x-icon";
+    if (!strcasecmp(ext, ".woff")) return "font/woff";
+    if (!strcasecmp(ext, ".woff2")) return "font/woff2";
+    return "application/octet-stream";
+}
 
-    send_http_error(client_fd, 404);
+/* Static files are deliberately confined to the firmware WebUI document root.
+ * Each path component is opened beneath an O_DIRECTORY|O_NOFOLLOW descriptor,
+ * preventing traversal and symlink escapes. */
+int send_file(const int client_fd, const char *path) {
+    const char *root = DIVINUS_STATIC_ROOT;
+    const char *name = path;
+    char relative[PATH_MAX];
+    if (!name || name[0] != '/' || name[1] == '/' || strlen(name) >= sizeof(relative)) {
+        return 0;
+    }
+    while (*name == '/') name++;
+    if (!*name || strstr(name, "..") || strchr(name, '\\') || strchr(name, '%') ||
+        strpbrk(name, "\r\n\t")) {
+        return 0;
+    }
+    snprintf(relative, sizeof(relative), "%s", name);
+    const char *mime = static_mime(name);
+
+    int rootfd = open(root, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (rootfd < 0) return 0;
+    int fd = -1, dirfd = rootfd;
+    char *save = NULL, *part = strtok_r(relative, "/", &save);
+    while (part) {
+        char *next = strtok_r(NULL, "/", &save);
+        if (!*part || !strcmp(part, ".") || !strcmp(part, "..")) { close(dirfd); return 0; }
+        if (next) {
+            int child = openat(dirfd, part, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+            close(dirfd);
+            if (child < 0) return 0;
+            dirfd = child;
+        } else {
+            fd = openat(dirfd, part, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+            close(dirfd);
+        }
+        part = next;
+    }
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_size < 0) {
+        if (fd >= 0) close(fd);
+        return 0;
+    }
+    char header[512];
+    int header_len = snprintf(header, sizeof(header),
+        "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %lld\r\n"
+        "Connection: close\r\n\r\n", mime, (long long)st.st_size);
+    if (send_to_fd(client_fd, header, header_len) >= 0) {
+        char buf[4096]; ssize_t n;
+        while ((n = read(fd, buf, sizeof(buf))) > 0)
+            if (send_to_fd(client_fd, buf, n) < 0) break;
+    }
+    close(fd); close_socket_fd(client_fd);
     return EXIT_FAILURE;
 }
 
@@ -1007,6 +1044,10 @@ void respond_request(http_request_t *req) {
     }
 
     if (EQUALS(req->uri, "/") || EQUALS(req->uri, "/index.htm") || EQUALS(req->uri, "/index.html")) {
+        if (app_config.web_enable_static) {
+            const char *static_path = EQUALS(req->uri, "/") ? "/index.html" : req->uri;
+            if (send_file(req->clntFd, static_path)) return;
+        }
         send_html(req->clntFd, indexhtml);
         return;
     }
@@ -1893,8 +1934,13 @@ void respond_request(http_request_t *req) {
         return;
     }
 
-    if (app_config.web_enable_static && send_file(req->clntFd, req->uri))
-        return;
+    if (app_config.web_enable_static) {
+        if (EQUALS(req->uri, "/")) {
+            /* Keep the embedded page as the compatibility fallback when the
+             * external WebUI is absent or its index is unavailable. */
+            if (send_file(req->clntFd, "/index.html")) return;
+        } else if (send_file(req->clntFd, req->uri)) return;
+    }
 
     send_http_error(req->clntFd, 400);
 }

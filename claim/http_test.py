@@ -4,6 +4,8 @@ import subprocess
 import time
 import shutil
 import atexit
+import base64
+from http.client import RemoteDisconnected
 from urllib.parse import urlencode
 
 root = pathlib.Path('/tmp/divinus-http-test')
@@ -15,9 +17,19 @@ shadow = root / 'shadow'
 original = 'root::1:2:3:4:5:6:7\n'
 shadow.write_text(original)
 (root / 'eula/eula.en.txt').write_text('Majestic EULA\nVersion 1.0, 1 September 2026\n')
+(root / 'www').mkdir()
+(root / 'www/index.html').write_text('external webui')
+(root / 'www/app.js').write_text('console.log(1)')
+(root / 'outside.txt').write_text('outside')
+try:
+    (root / 'www/outside-link').symlink_to(root / 'outside.txt')
+except (OSError, NotImplementedError):
+    pass
 server = subprocess.Popen(['/tmp/http-test'])
 
-def request(method, path, body=None, headers={}):
+def request(method, path, body=None, headers=None):
+    headers = dict(headers or {})
+    headers.setdefault('Authorization', 'Basic ' + base64.b64encode(b'admin:secret').decode())
     conn = http.client.HTTPConnection('127.0.0.1', 18081, timeout=3)
     conn.request(method, path, body, headers)
     response = conn.getresponse()
@@ -57,6 +69,19 @@ try:
     assert request('POST', '/setup', password + '&eula=accepted&eula_lang=en', headers)[0] == 200
     assert shadow.read_text() != original
     assert (root / 'eula-accepted').read_text().startswith('1.0 en web ')
+    assert request('GET', '/')[1] == b'external webui'
+    assert request('GET', '/app.js')[1] == b'console.log(1)'
+    assert request('GET', '/missing.js')[0] == 400
+    try:
+        traversal_status = request('GET', '/../outside.txt')[0]
+    except RemoteDisconnected:
+        traversal_status = 400
+    assert traversal_status in (400, 404)
+    try:
+        symlink_status = request('GET', '/outside-link')[0]
+    except RemoteDisconnected:
+        symlink_status = 400
+    assert symlink_status == 400
     assert request('POST', '/setup', password + '&eula=accepted&eula_lang=en', headers)[0] == 403
     print('HTTP EULA tests passed')
 finally:

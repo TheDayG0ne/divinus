@@ -3,4 +3,5 @@
 #define CLAIM_LOCK "/tmp/divinus-http-test/lock"
 #define CLAIM_EULA_DIR "/tmp/divinus-http-test/eula"
 #define CLAIM_EULA_RECORD "/tmp/divinus-http-test/eula-accepted"
+#define DIVINUS_STATIC_ROOT "/tmp/divinus-http-test/www"
 #include "../src/server.c"

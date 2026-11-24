@@ -11,7 +11,7 @@ This document describes the fields that can be found within a configuration file
 - **web_auth_user**: Username for basic authentication (default: `admin`).
 - **web_auth_pass**: Password for basic authentication (default: `12345`).
 - **web_auth_skiplocal**: Boolean to skip authentication for local addresses (default: `true`).
-- **web_enable_static**: Boolean to enable serving static web content (default: `false`).
+- **web_enable_static**: Boolean to enable serving static WebUI files from `/var/www` (default: `false`). Requests use the same port, API routes and authentication as the embedded page; missing files fall back to the embedded page where applicable. Paths are confined below `/var/www` and symlinks are not followed.
 - **isp_thread_stack_size**: Stack size for ISP thread, if applicable (default: `16384`).
 - **venc_stream_thread_stack_size**: Stack size for video encoding stream thread (default: `16384`).
 - **web_server_thread_stack_size**: Stack size for web server thread (default: `65536`).
