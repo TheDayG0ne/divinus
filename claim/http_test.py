@@ -4,6 +4,7 @@ import subprocess
 import time
 import shutil
 import atexit
+from urllib.parse import urlencode
 
 root = pathlib.Path('/tmp/divinus-http-test')
 shutil.rmtree(root, ignore_errors=True)
@@ -29,8 +30,23 @@ try:
     assert request('GET', '/setup.html')[0] == 200
     assert request('GET', '/eula.en.txt')[1].startswith(b'Majestic EULA')
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-    short_password = 'password=abcdefg&confirm=abcdefg'
-    assert request('POST', '/setup', short_password + '&eula=accepted&eula_lang=en', headers)[0] == 400
+    for password_text, expected in (
+        ('abcdefg', 400),
+        ('abcdefgh', 200),
+        ('паролька', 200),
+    ):
+        shadow.write_text(original)
+        (root / 'eula-accepted').unlink(missing_ok=True)
+        form = urlencode({'password': password_text, 'confirm': password_text,
+                          'eula': 'accepted', 'eula_lang': 'en'})
+        assert request('POST', '/setup', form, headers)[0] == expected
+        assert (shadow.read_text() == original) if expected == 400 else (shadow.read_text() != original)
+        if expected == 400:
+            assert not (root / 'eula-accepted').exists()
+    shadow.write_text(original)
+    (root / 'eula-accepted').unlink(missing_ok=True)
+    malformed = 'password=%C3%28&confirm=%C3%28&eula=accepted&eula_lang=en'
+    assert request('POST', '/setup', malformed, headers)[0] == 400
     assert shadow.read_text() == original
     assert not (root / 'eula-accepted').exists()
     password = 'password=abcdefgh&confirm=abcdefgh'

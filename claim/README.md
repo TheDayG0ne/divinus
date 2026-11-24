@@ -11,7 +11,7 @@ an agent or automation. A successful claim writes the informational
 `/etc/eula-accepted` record as `version language web UTC-time`, like the SSH
 claim door. A failed record write is logged but does not undo the password.
 
-`POST /setup` accepts a URL-encoded password of 8–128 bytes and optional matching
+`POST /setup` accepts a URL-encoded password of 8–128 Unicode characters (up to 128 UTF-8 bytes in the server form buffer) and optional matching
 confirmation, hashes it with SHA-512 crypt and updates `/etc/shadow` under
 `/run/openipc-claim.lock`. Unreadable or malformed shadow fails closed. Once
 claimed, setup is forbidden. The service needs permission to read/update shadow.

@@ -457,7 +457,7 @@
 		<!-- STEP 2 — the claim. -->
 		<div id="step2">
 			<p class="lede" id="l-lede">Choose a password. Use a private network: HTTP sends it in cleartext.</p>
-			<p class="hint">This sets the system root password only; Divinus service credentials are configured separately. Use at least 8 bytes.</p>
+			<p class="hint">This sets the system root password only; Divinus service credentials are configured separately. Use at least 8 characters.</p>
 			<div class="note">
 				<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
 				<p class="hint" id="l-rootnote">This is the camera's <strong>root</strong> password — the one password it has. The web interface, SSH, RTSP and ONVIF all check it.</p>
@@ -1101,7 +1101,7 @@
 				// again and is the one that decides. Keeping the wording identical
 				// means a rule that ever drifts reads the same either way.
 				if (pw.value !== cf.value) return fail(T().mismatch);
-				if (pw.value.length < 8) return fail(T().short);
+				if ([...pw.value].length < 8) return fail(T().short);
 
 				// A private key must not go on the wire, and the button is
 				// already disabled while one stands. This is the same rule

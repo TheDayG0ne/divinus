@@ -37,6 +37,43 @@ static int setup_value(const char *body, size_t len, char *out, size_t cap) {
     return 0;
 }
 
+/* Count Unicode scalar values in a UTF-8 string.  The form buffers are
+ * byte-limited, but the password policy is expressed in characters. */
+static int setup_utf8_chars(const unsigned char *s, size_t len, size_t *count) {
+    size_t n = 0;
+    for (size_t i = 0; i < len;) {
+        unsigned char c = s[i++];
+        unsigned codepoint;
+        size_t extra;
+        if (c < 0x80) {
+            codepoint = c;
+            extra = 0;
+        } else if (c >= 0xc2 && c <= 0xdf) {
+            codepoint = c & 0x1f;
+            extra = 1;
+        } else if (c >= 0xe0 && c <= 0xef) {
+            codepoint = c & 0x0f;
+            extra = 2;
+        } else if (c >= 0xf0 && c <= 0xf4) {
+            codepoint = c & 0x07;
+            extra = 3;
+        } else return -1;
+        if (i + extra > len) return -1;
+        for (size_t j = 0; j < extra; j++) {
+            unsigned char continuation = s[i++];
+            if ((continuation & 0xc0) != 0x80) return -1;
+            codepoint = (codepoint << 6) | (continuation & 0x3f);
+        }
+        if ((extra == 2 && codepoint < 0x800) ||
+            (extra == 3 && codepoint < 0x10000) ||
+            (codepoint >= 0xd800 && codepoint <= 0xdfff) ||
+            codepoint > 0x10ffff) return -1;
+        n++;
+    }
+    *count = n;
+    return 0;
+}
+
 static int setup_form(char *body, size_t len, char *password, char *lang, int *accepted) {
     unsigned seen = 0;
     char confirm[129] = {0}, value[129];
@@ -66,8 +103,10 @@ static int setup_form(char *body, size_t len, char *password, char *lang, int *a
         pos = end + 1;
         if (end < len && pos == len) goto fail;
     }
+    size_t password_chars;
     memset(value, 0, sizeof(value));
-    if (!(seen & 1) || strlen(password) < 8 || ((seen & 2) && strcmp(password, confirm))) goto fail;
+    if (!(seen & 1) || setup_utf8_chars((unsigned char *)password, strlen(password), &password_chars) ||
+        password_chars < 8 || ((seen & 2) && strcmp(password, confirm))) goto fail;
     memset(confirm, 0, sizeof(confirm));
     return 0;
 fail:
