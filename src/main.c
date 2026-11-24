@@ -79,6 +79,9 @@ int main(int argc, char *argv[]) {
         rtspHandle = rtsp_create(RTSP_MAXIMUM_CONNECTIONS, app_config.rtsp_port, 1);
         rtsp_latch_audio_codec();
         HAL_INFO("rtsp", "Started listening for clients...\n");
+#if defined(__linux__) && (defined(__i386__) || defined(__x86_64__))
+        HAL_INFO("rtsp", "Root shadow authentication required for every request.\n");
+#else
         if (app_config.rtsp_enable_auth) {
             if (EMPTY(app_config.rtsp_auth_user) || EMPTY(app_config.rtsp_auth_pass))
                 HAL_ERROR("rtsp", "One or both credential fields have been left empty!\n");
@@ -87,6 +90,7 @@ int main(int argc, char *argv[]) {
                 HAL_INFO("rtsp", "Authentication enabled!\n");
             }
         }
+#endif
     }
 
     if (app_config.stream_enable)

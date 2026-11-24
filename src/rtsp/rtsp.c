@@ -19,6 +19,12 @@
 #include <netinet/in.h>
 #include <sys/ioctl.h>
 #include "../../claim/claim.h"
+#ifndef CLAIM_SHADOW
+#define CLAIM_SHADOW "/etc/shadow"
+#endif
+#if defined(__linux__) && (defined(__i386__) || defined(__x86_64__))
+#include "../shadow_auth.h"
+#endif
 
 extern void request_idr();
 
@@ -417,6 +423,9 @@ static int __message_proc_sock(struct list_t *e, void *p)
         con->method = __METHOD_NONE;
 
         char header = 0, isAuthValid = 0, badTrack = 0, *tok, *last;
+#if defined(__linux__) && (defined(__i386__) || defined(__x86_64__))
+        int authHeaders = 0;
+#endif
         unsigned long long session_id;
         /* parse line by line. hereafter parser is switched according to the finite state machine */
         while (__read_line(con, buf)) {
@@ -443,13 +452,28 @@ static int __message_proc_sock(struct list_t *e, void *p)
                 } header++;
             }
 
+#if defined(__linux__) && (defined(__i386__) || defined(__x86_64__))
+            if (header && SCMP(__STR_AUTH ":", buf)) {
+                char *value = buf + strlen(__STR_AUTH) + 1;
+                size_t len = strlen(value);
+                authHeaders++;
+                while (*value == ' ' || *value == '\t') value++;
+                len = strlen(value);
+                if (len >= 2 && value[len - 2] == '\r' && value[len - 1] == '\n') {
+                    value[len - 2] = '\0';
+                    isAuthValid = shadow_auth_basic(CLAIM_SHADOW, value);
+                }
+            } else
+#else
             if (SCMP(__STR_AUTH, buf) && h->isAuthOn) {
                     char cred[66], valid[256];
                     sprintf(cred, "%s:%s", h->user, h->pass);
                     strcpy(valid, "Basic ");
                     base64_encode(valid + 6, cred, strlen(cred));
                     isAuthValid = !strncmp(buf + strlen(__STR_AUTH) + 2, valid, strlen(valid));
-             } else if (SCMP(__STR_CSEQ, buf)) {
+             } else
+#endif
+             if (SCMP(__STR_CSEQ, buf)) {
                 ASSERT(tok = strtok_r(buf, ": ", &last), goto error);
                 ASSERT(tok = strtok_r(NULL, ": ", &last), goto error);
                 ASSERT((con->cseq = atoi(tok)) > 0, goto error);
@@ -504,11 +528,19 @@ error:
             con->parser_state = __PARSER_S_ERROR;
         }
 
+#if defined(__linux__) && (defined(__i386__) || defined(__x86_64__))
+        /* Recheck ownership for existing connections as well as at accept. */
+        if (claim_state(CLAIM_SHADOW) != 1 || authHeaders != 1 || !isAuthValid) {
+            __method_auth(con, h);
+        } else
+#endif
         if (con->parser_state == __PARSER_S_ERROR) {
             __method_error(con, h);
         } else {
+#if !defined(__linux__) || (!defined(__i386__) && !defined(__x86_64__))
             if (con->method != __METHOD_NONE && h->isAuthOn && !isAuthValid)
                 con->method = __METHOD_AUTH;
+#endif
             switch (con->method) {
                 case __METHOD_AUTH: __method_auth(con, h); break;
                 case __METHOD_OPTIONS: __method_options(con, h); break;
@@ -794,7 +826,7 @@ static inline int __accept_proc_sock(rtsp_handle h, int server_fd, struct sock_s
         }
 
         /* Never admit a client while ownership is absent or unreadable. */
-        if (claim_state("/etc/shadow") != 1) {
+        if (claim_state(CLAIM_SHADOW) != 1) {
             close(fd);
             return SUCCESS;
         }
