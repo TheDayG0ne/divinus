@@ -67,7 +67,7 @@ static int setup_form(char *body, size_t len, char *password, char *lang, int *a
         if (end < len && pos == len) goto fail;
     }
     memset(value, 0, sizeof(value));
-    if (!(seen & 1) || strlen(password) < 12 || ((seen & 2) && strcmp(password, confirm))) goto fail;
+    if (!(seen & 1) || strlen(password) < 8 || ((seen & 2) && strcmp(password, confirm))) goto fail;
     memset(confirm, 0, sizeof(confirm));
     return 0;
 fail:

@@ -29,7 +29,11 @@ try:
     assert request('GET', '/setup.html')[0] == 200
     assert request('GET', '/eula.en.txt')[1].startswith(b'Majestic EULA')
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-    password = 'password=abcdefghijkl&confirm=abcdefghijkl'
+    short_password = 'password=abcdefg&confirm=abcdefg'
+    assert request('POST', '/setup', short_password + '&eula=accepted&eula_lang=en', headers)[0] == 400
+    assert shadow.read_text() == original
+    assert not (root / 'eula-accepted').exists()
+    password = 'password=abcdefgh&confirm=abcdefgh'
     for suffix in ('', '&eula=no&eula_lang=en', '&eula=accepted&eula=no&eula_lang=en', '&eula=accepted&eula_lang=ru'):
         assert request('POST', '/setup', password + suffix, headers)[0] == 400
         assert shadow.read_text() == original

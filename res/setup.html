@@ -457,15 +457,15 @@
 		<!-- STEP 2 — the claim. -->
 		<div id="step2">
 			<p class="lede" id="l-lede">Choose a password. Use a private network: HTTP sends it in cleartext.</p>
-			<p class="hint">This sets the system root password only; Divinus service credentials are configured separately. Use at least 12 bytes.</p>
+			<p class="hint">This sets the system root password only; Divinus service credentials are configured separately. Use at least 8 bytes.</p>
 			<div class="note">
 				<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
 				<p class="hint" id="l-rootnote">This is the camera's <strong>root</strong> password — the one password it has. The web interface, SSH, RTSP and ONVIF all check it.</p>
 			</div>
 			<label for="password" id="l-pw">Password</label>
-			<input id="password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>
+			<input id="password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required>
 			<label for="confirm" id="l-cf">Confirm password</label>
-			<input id="confirm" name="confirm" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>
+			<input id="confirm" name="confirm" type="password" autocomplete="new-password" minlength="8" maxlength="128" required>
 			<label class="check"><input id="show" type="checkbox"> <span id="l-show">Show password</span></label>
 
 			<!-- Shown only once the camera has said it receives the field. A
