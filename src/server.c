@@ -4,23 +4,20 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+#ifndef CLAIM_SHADOW
 #define CLAIM_SHADOW "/etc/shadow"
 #define CLAIM_LOCK "/run/openipc-claim.lock"
+#define CLAIM_EULA_DIR "/usr/share/openipc/eula"
+#define CLAIM_EULA_RECORD "/etc/eula-accepted"
+#endif
 
-static const char setup_page[] =
-    "<!doctype html><html><head><meta charset=\"utf-8\"><title>Camera setup</title></head>"
-    "<body><h1>Set the root password</h1>"
-    "<p>Use a private network: this page sends the password over unencrypted HTTP.</p>"
-    "<form method=\"post\" action=\"/setup\">"
-    "<label>Password <input type=\"password\" name=\"password\" minlength=\"12\" maxlength=\"128\" required></label>"
-    "<button type=\"submit\">Set password</button></form></body></html>";
+IMPORT_STR(.rodata, "../res/setup.html", setuphtml);
+extern const char setuphtml[];
 
-/* Decode exactly one form field; reject malformed escapes and embedded NULs. */
-static int setup_password(char *body, size_t len, char *out, size_t cap) {
-    static const char prefix[] = "password=";
+/* Decode one form value, rejecting malformed escapes, NUL and controls. */
+static int setup_value(const char *body, size_t len, char *out, size_t cap) {
     size_t j = 0;
-    if (len < sizeof(prefix) - 1 || memcmp(body, prefix, sizeof(prefix) - 1)) return -1;
-    for (size_t i = sizeof(prefix) - 1; i < len; i++) {
+    for (size_t i = 0; i < len; i++) {
         unsigned char c = body[i];
         if (c == '&' || c == 0) return -1;
         if (c == '+') c = ' ';
@@ -37,7 +34,77 @@ static int setup_password(char *body, size_t len, char *out, size_t cap) {
         out[j++] = c;
     }
     out[j] = 0;
-    return j >= 12 ? 0 : -1;
+    return 0;
+}
+
+static int setup_form(char *body, size_t len, char *password, char *lang, int *accepted) {
+    unsigned seen = 0;
+    char confirm[129] = {0}, value[129];
+    size_t pos = 0;
+    while (pos < len) {
+        size_t end = pos, eq;
+        while (end < len && body[end] != '&') end++;
+        for (eq = pos; eq < end && body[eq] != '='; eq++);
+        if (eq == end || setup_value(body + eq + 1, end - eq - 1, value, sizeof(value))) goto fail;
+        unsigned bit;
+        size_t keylen = eq - pos;
+        if (keylen == 8 && !memcmp(body + pos, "password", 8)) bit = 1;
+        else if (keylen == 7 && !memcmp(body + pos, "confirm", 7)) bit = 2;
+        else if (keylen == 4 && !memcmp(body + pos, "eula", 4)) bit = 4;
+        else if (keylen == 9 && !memcmp(body + pos, "eula_lang", 9)) bit = 8;
+        else if (keylen == 6 && !memcmp(body + pos, "sshkey", 6) && !*value) bit = 16;
+        else goto fail;
+        if (seen & bit) goto fail;
+        seen |= bit;
+        if (bit == 1) strcpy(password, value);
+        if (bit == 2) strcpy(confirm, value);
+        if (bit == 4) *accepted = !strcmp(value, "accepted");
+        if (bit == 8) {
+            if (strcmp(value, "en") && strcmp(value, "ru") && strcmp(value, "zh-CN")) goto fail;
+            strcpy(lang, value);
+        }
+        pos = end + 1;
+        if (end < len && pos == len) goto fail;
+    }
+    memset(value, 0, sizeof(value));
+    if (!(seen & 1) || strlen(password) < 12 || ((seen & 2) && strcmp(password, confirm))) goto fail;
+    memset(confirm, 0, sizeof(confirm));
+    return 0;
+fail:
+    memset(value, 0, sizeof(value));
+    memset(confirm, 0, sizeof(confirm));
+    return -1;
+}
+
+/* Absent English EULA means a Majestic-free image. Other errors fail closed. */
+static int setup_eula_open(const char *lang) {
+    char path[512]; struct stat st;
+    if (snprintf(path, sizeof(path), "%s/eula.%s.txt", CLAIM_EULA_DIR, lang) >= (int)sizeof(path)) return -1;
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return errno == ENOENT ? -2 : -1;
+    if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 1024 * 1024) { close(fd); return -1; }
+    return fd;
+}
+
+static void setup_record(const char *lang) {
+    int fd = setup_eula_open("en");
+    char version[64] = "unknown", line[512], stamp[32];
+    FILE *f = fd < 0 ? NULL : fdopen(fd, "r");
+    if (f) {
+        while (fgets(line, sizeof(line), f)) {
+            char v[64];
+            if (sscanf(line, "Version %63[0-9.]", v) == 1) { strcpy(version, v); break; }
+        }
+        fclose(f);
+    } else if (fd >= 0) close(fd);
+    time_t now = time(NULL); struct tm tm;
+    if (!gmtime_r(&now, &tm) || !strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%SZ", &tm)) strcpy(stamp, "unknown");
+    fd = open(CLAIM_EULA_RECORD, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd >= 0) {
+        int n = snprintf(line, sizeof(line), "%s %s web %s\n", version, lang, stamp);
+        if (write(fd, line, n) != n) fprintf(stderr, "Cannot write EULA acceptance record\n");
+        close(fd);
+    } else fprintf(stderr, "Cannot open EULA acceptance record: %s\n", strerror(errno));
 }
 
 static int setup_claim(const char *password) {
@@ -714,16 +781,32 @@ void respond_request(http_request_t *req) {
         send_http_error(req->clntFd, 500);
         return;
     }
+    if (!ownership && EQUALS(req->method, "GET")) {
+        const char *lang = NULL;
+        if (EQUALS(req->uri, "/eula.en.txt")) lang = "en";
+        else if (EQUALS(req->uri, "/eula.ru.txt")) lang = "ru";
+        else if (EQUALS(req->uri, "/eula.zh-CN.txt")) lang = "zh-CN";
+        if (lang) {
+            int fd = setup_eula_open(lang);
+            if (fd < 0) { send_http_error(req->clntFd, fd == -2 ? 404 : 500); return; }
+            struct stat st;
+            if (fstat(fd, &st)) { close(fd); send_http_error(req->clntFd, 500); return; }
+            char header[256], buf[4096];
+            int n = snprintf(header, sizeof(header), "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %lld\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n", (long long)st.st_size);
+            send_to_fd(req->clntFd, header, n);
+            ssize_t r; while ((r = read(fd, buf, sizeof(buf))) > 0) if (send_to_fd(req->clntFd, buf, r) < 0) break;
+            close(fd); close_socket_fd(req->clntFd); return;
+        }
+    }
     if (EQUALS(req->uri, "/setup.html") || EQUALS(req->uri, "/setup")) {
         if (ownership != 0) { send_http_error(req->clntFd, 403); return; }
-        if (EQUALS(req->method, "GET")) { send_html(req->clntFd, setup_page); return; }
+        if (EQUALS(req->method, "GET")) { send_html(req->clntFd, setuphtml); return; }
         if (!EQUALS(req->uri, "/setup")) { send_http_error(req->clntFd, 405); return; }
         if (cross_site_request()) { send_http_error(req->clntFd, 403); return; }
-        /* Until EULA presentation and acceptance are implemented, never bypass it. */
-        struct stat eula;
-        if (stat("/usr/share/openipc/eula/eula.en.txt", &eula) == 0 || errno != ENOENT) {
-            send_http_error(req->clntFd, 403); return;
-        }
+        int eula_fd = setup_eula_open("en");
+        if (eula_fd == -1) { send_http_error(req->clntFd, 500); return; }
+        int eula_required = eula_fd >= 0;
+        if (eula_fd >= 0) close(eula_fd);
         const char *content_type = request_header("Content-Type");
         const char *length = request_header("Content-Length");
         char *end;
@@ -733,20 +816,27 @@ void respond_request(http_request_t *req) {
             strcasecmp(content_type, "application/x-www-form-urlencoded")) {
             send_http_error(req->clntFd, 400); return;
         }
-        char password[129] = {0};
-        if (setup_password(req->payload, size, password, sizeof(password))) {
+        char password[129] = {0}, lang[8] = "en";
+        int accepted = 0;
+        if (setup_form(req->payload, size, password, lang, &accepted) || (eula_required && !accepted)) {
             memset(password, 0, sizeof(password));
             send_http_error(req->clntFd, 400); return;
+        }
+        if (eula_required) {
+            int selected = setup_eula_open(lang);
+            if (selected < 0) { memset(password, 0, sizeof(password)); send_http_error(req->clntFd, 400); return; }
+            close(selected);
         }
         int result = setup_claim(password);
         memset(password, 0, sizeof(password));
         if (result != 0) { send_http_error(req->clntFd, result == 1 ? 403 : 500); return; }
-        send_html(req->clntFd, "<!doctype html><title>Setup complete</title><p>Password set. Sign in using your configured services.</p>");
+        if (eula_required) setup_record(lang);
+        send_html(req->clntFd, "Password set. Sign in using your configured services.");
         return;
     }
     if (!ownership) {
         if (EQUALS(req->method, "GET") && EQUALS(req->uri, "/"))
-            send_html(req->clntFd, setup_page);
+            send_html(req->clntFd, setuphtml);
         else send_http_error(req->clntFd, 403);
         return;
     }
