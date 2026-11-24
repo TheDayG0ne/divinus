@@ -56,6 +56,9 @@ int jpeg_init() {
             case HAL_PLATFORM_T31: ret = t31_video_create(jpeg_index, &config); break;
 #elif defined(__riscv) || defined(__riscv__)
             case HAL_PLATFORM_CVI: ret = cvi_video_create(jpeg_index, &config); break;
+
+#elif defined(__i386__) || defined(__x86_64__)
+             case HAL_PLATFORM_UVC: goto active;
 #endif
             default:
                 pthread_mutex_unlock(&jpeg_mutex);
@@ -104,6 +107,9 @@ void jpeg_deinit() {
             break;
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: cvi_video_destroy(jpeg_index); break;
+
+#elif defined(__i386__) || defined(__x86_64__)
+        case HAL_PLATFORM_UVC: goto active;
 #endif
         default:
             pthread_mutex_unlock(&jpeg_mutex);

@@ -811,6 +811,9 @@ int media_mp4_enable(void) {
             case HAL_PLATFORM_T31: ret = t31_video_create(index, &config); break;
 #elif defined(__riscv) || defined(__riscv__)
             case HAL_PLATFORM_CVI: ret = cvi_video_create(index, &config); break;
+
+#elif defined(__i386__) || defined(__x86_64__)
+             case HAL_PLATFORM_UVC: ret = uvc_video_create(index, &config); break;
 #endif
         }
 

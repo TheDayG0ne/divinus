@@ -57,10 +57,23 @@ static void onvif_init_identity(void) {
     char idpath[PATH_MAX];
     snprintf(idpath, sizeof(idpath), "/var/lib/divinus/uvc-%02x%02x%02x%02x.uuid", digest[0], digest[1], digest[2], digest[3]);
     f = fopen(idpath, "r");
-    if (f && fscanf(f, "%36[0-9a-f-]", onvif_uuid) == 1) { fclose(f); return; }
-    if (f) fclose(f);
-    snprintf(onvif_uuid, sizeof(onvif_uuid), "%02x%02x%02x%02x-%02x%02x-5%02x-%02x%02x-%02x%02x%02x%02x%02x%02x%02x%02x",
-        digest[0],digest[1],digest[2],digest[3],digest[4],digest[5],digest[6],digest[7],digest[8],digest[9],digest[10],digest[11],digest[12],digest[13],digest[14],digest[15],digest[16],digest[17]);
+    if (f) {
+        char stored[sizeof(onvif_uuid)];
+        if (fscanf(f, "%36[0-9a-f-]", stored) == 1 &&
+            sscanf(stored, "%8[0-9a-f]-%4[0-9a-f]-%4[0-9a-f]-%4[0-9a-f]-%12[0-9a-f]",
+                seed, seed + 9, seed + 14, seed + 19, seed + 24) == 5 &&
+            strlen(stored) == 36) {
+            memcpy(onvif_uuid, stored, sizeof(onvif_uuid));
+            fclose(f);
+            atomic_init(&onvif_message_seq, 0);
+            return;
+        }
+        fclose(f);
+    }
+    snprintf(onvif_uuid, sizeof(onvif_uuid), "%02x%02x%02x%02x-%02x%02x-5%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5],
+        digest[6] & 0x0f, (digest[7] & 0x3f) | 0x80, digest[8],
+        digest[9], digest[10], digest[11], digest[12], digest[13], digest[14], digest[15]);
     atomic_init(&onvif_message_seq, 0);
 }
 
