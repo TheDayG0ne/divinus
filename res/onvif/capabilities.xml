@@ -42,8 +42,8 @@
             <tt:RELToken>false</tt:RELToken>
             <tt:SAMLToken>false</tt:SAMLToken>
             <tt:KerberosToken>false</tt:KerberosToken>
-            <tt:UsernameToken>true</tt:UsernameToken>
-            <tt:HttpDigest>true</tt:HttpDigest>
+            <tt:UsernameToken>false</tt:UsernameToken>
+            <tt:HttpDigest>false</tt:HttpDigest>
           </tt:Security>
         </tt:Device>
         <tt:Events>

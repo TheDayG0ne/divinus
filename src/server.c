@@ -919,9 +919,9 @@ void respond_request(http_request_t *req) {
     }
 
 #if defined(__linux__) && (defined(__i386__) || defined(__x86_64__))
-    /* ONVIF retains its independent authentication pending protocol work. */
-    if (!(app_config.onvif_enable && STARTS_WITH(req->uri, "/onvif")) &&
-        !shadow_auth_basic(CLAIM_SHADOW, request_header("Authorization"))) {
+    /* ONVIF is fail-closed on x86: HTTP Basic root/shadow is mandatory.
+       Do not bypass this check when ONVIF auth is disabled or enabled. */
+    if (!shadow_auth_basic(CLAIM_SHADOW, request_header("Authorization"))) {
         char denied[] = "HTTP/1.1 401 Unauthorized\r\n"
             "WWW-Authenticate: Basic realm=\"Access the camera services\"\r\n"
             "Content-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
@@ -948,17 +948,8 @@ void respond_request(http_request_t *req) {
         }
         respLen = sizeof(response);
 
-        if (app_config.onvif_enable_auth && !onvif_is_preauth_action(action) &&
-            !onvif_validate_soap_auth(req->payload)) {
-            respLen = sprintf(response,
-                "HTTP/1.1 401 Unauthorized\r\n"
-                "Content-Type: text/plain\r\n"
-                "WWW-Authenticate: Digest realm=\"Access the camera services\"\r\n"
-                "Connection: close\r\n\r\n%s",
-                badauthxml);
-            send_and_close(req->clntFd, response, respLen);
-            return;
-        }
+        /* WS-Security UsernameToken/Digest is intentionally not accepted on
+           x86 until replay protection and strict XML parsing are complete. */
 
         if (EQUALS(path, "device_service")) {
             if (EQUALS(action, "GetCapabilities")) {

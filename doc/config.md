@@ -44,9 +44,11 @@ This document describes the fields that can be found within a configuration file
 ## ONVIF section
 
 - **enable**: Boolean to activate ONVIF services (default: `false`).
-- **enable_auth**: Boolean to turn on ONVIF authentication (default: `false`).
-- **auth_user**: Username for ONVIF authentication (default: `admin`).
-- **auth_pass**: Password for ONVIF authentication (default: `12345`).
+- **enable_auth**: Legacy ONVIF WS-Security switch (default: `false`). On x86 Linux it does not disable mandatory HTTP Basic `root` authentication; WS-Security UsernameToken/Digest is not accepted.
+- **auth_user**: Legacy/non-x86 ONVIF username (default: `admin`).
+- **auth_pass**: Legacy/non-x86 ONVIF password (default: `12345`).
+
+On x86 Linux, every ONVIF HTTP request is denied unless `Authorization: Basic ...` authenticates `root` through `/etc/shadow` via `shadow_auth_basic`. This is intentionally fail-closed, including when authentication is configured off. WSSE Digest remains disabled until replay protection and strict XML parsing are implemented.
 
 ## RTSP section
 
