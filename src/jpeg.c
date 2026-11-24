@@ -18,6 +18,13 @@ int jpeg_init() {
         case HAL_PLATFORM_T31:
             if (app_config.mjpeg_enable) goto active;
             break;
+#elif defined(__i386__) || defined(__x86_64__)
+        case HAL_PLATFORM_UVC:
+            if (uvc_channel_bind(0)) {
+                pthread_mutex_unlock(&jpeg_mutex);
+                return EXIT_FAILURE;
+            }
+            goto active;
 #endif
     }
 
@@ -57,8 +64,6 @@ int jpeg_init() {
 #elif defined(__riscv) || defined(__riscv__)
             case HAL_PLATFORM_CVI: ret = cvi_video_create(jpeg_index, &config); break;
 
-#elif defined(__i386__) || defined(__x86_64__)
-             case HAL_PLATFORM_UVC: goto active;
 #endif
             default:
                 pthread_mutex_unlock(&jpeg_mutex);
@@ -161,7 +166,10 @@ int jpeg_get(short width, short height, char quality, char grayscale,
             -1 : jpeg_index, jpeg); break;
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: ret = cvi_video_snapshot_grab(jpeg_index, jpeg); break;
+#elif defined(__i386__) || defined(__x86_64__)
+        case HAL_PLATFORM_UVC: ret = uvc_video_snapshot_grab(jpeg_index, jpeg); break;
 #endif
+        default: ret = EXIT_FAILURE; break;
     }
     if (ret && jpeg->data) {
         free(jpeg->data);

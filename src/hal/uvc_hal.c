@@ -82,7 +82,23 @@ void *uvc_video_thread(void){
         if (!callback_frame) { pthread_mutex_unlock(&mtx); ctl(VIDIOC_QBUF,&b); continue; }
         memcpy(callback_frame,encoded,encoded_len);
         pthread_mutex_unlock(&mtx);
-        for(int i=0;i<UVC_MAX_CHANNELS;i++) if(uvc_state[i].enable&&uvc_state[i].mainLoop&&uvc_vid_cb){hal_vidpack pack;hal_vidstream s;memset(&pack,0,sizeof(pack));pack.data=callback_frame;pack.length=encoded_len;pack.naluCnt=1;pack.nalu[0].length=encoded_len;pack.timestamp=(uint64_t)b.timestamp.tv_sec*1000000+b.timestamp.tv_usec;s.pack=&pack;s.count=1;s.seq=0;uvc_vid_cb(i,&s);}
+        for (size_t pos=0; pos+3<encoded_len;) {
+            size_t start=pos, sc=0;
+            while (start+3<encoded_len) {
+                if (!callback_frame[start] && !callback_frame[start+1]) {
+                    if (callback_frame[start+2]==1) { sc=3; break; }
+                    if (start+4<encoded_len && !callback_frame[start+2] && callback_frame[start+3]==1) { sc=4; break; }
+                }
+                start++;
+            }
+            if (!sc || start+sc>=encoded_len) break;
+            size_t end=start+sc+1;
+            while (end+3<encoded_len && !(callback_frame[end]==0 && callback_frame[end+1]==0 &&
+                (callback_frame[end+2]==1 || (end+3<encoded_len && callback_frame[end+2]==0 && callback_frame[end+3]==1)))) end++;
+            if (end+3>=encoded_len) end=encoded_len;
+            for(int i=0;i<UVC_MAX_CHANNELS;i++) if(uvc_state[i].enable&&uvc_state[i].mainLoop&&uvc_vid_cb){hal_vidpack pack;hal_vidstream s;memset(&pack,0,sizeof(pack));pack.data=callback_frame+start;pack.length=end-start;pack.naluCnt=1;pack.nalu[0].length=end-start;pack.nalu[0].type=callback_frame[start+sc]&31;pack.timestamp=(uint64_t)b.timestamp.tv_sec*1000000+b.timestamp.tv_usec;s.pack=&pack;s.count=1;s.seq=0;uvc_vid_cb(i,&s);}
+            pos=end;
+        }
         free(callback_frame);
         ctl(VIDIOC_QBUF,&b);
     } return NULL;

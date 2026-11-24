@@ -353,6 +353,8 @@ void request_idr(void) {
         case HAL_PLATFORM_T31: t31_video_request_idr(index); break;
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: cvi_video_request_idr(index); break;
+#elif defined(__i386__) || defined(__x86_64__)
+        case HAL_PLATFORM_UVC: uvc_video_request_idr(index); break;
 #endif
     }
     pthread_mutex_unlock(&chnMtx);
@@ -380,6 +382,8 @@ void set_grayscale(bool active) {
         case HAL_PLATFORM_T31: t31_channel_grayscale(active); break;
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: cvi_channel_grayscale(active); break;
+#elif defined(__i386__) || defined(__x86_64__)
+        case HAL_PLATFORM_UVC: uvc_channel_grayscale(active); break;
 #endif
     }
     pthread_mutex_unlock(&chnMtx);
@@ -582,6 +586,8 @@ int media_audio_enable(void) {
         case HAL_PLATFORM_T31: ret = t31_audio_init(app_config.audio_srate); break;
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: ret = cvi_audio_init(app_config.audio_srate); break;
+#elif defined(__i386__) || defined(__x86_64__)
+        case HAL_PLATFORM_UVC: ret = uvc_audio_init(app_config.audio_srate); break;
 #endif
     }
     if (ret)
@@ -718,7 +724,10 @@ int media_mjpeg_enable(void) {
             case HAL_PLATFORM_T31: ret = t31_video_create(index, &config); break;
 #elif defined(__riscv) || defined(__riscv__)
             case HAL_PLATFORM_CVI: ret = cvi_video_create(index, &config); break;
+#elif defined(__i386__) || defined(__x86_64__)
+            case HAL_PLATFORM_UVC: ret = uvc_video_create(index, &config); break;
 #endif
+            default: ret = EXIT_FAILURE; break;
         }
 
         if (ret)
@@ -1123,6 +1132,8 @@ int sdk_stop(void) {
         case HAL_PLATFORM_T31: t31_video_destroy_all(); break;
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: cvi_video_destroy_all(); break;
+#elif defined(__i386__) || defined(__x86_64__)
+        case HAL_PLATFORM_UVC: uvc_video_destroy_all(); break;
 #endif
     }
 
