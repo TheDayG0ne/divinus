@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <errno.h>
 
 #include "common.h"
 
@@ -572,6 +573,7 @@ static inline int start_thread(thread_handle threadp)
 {
     struct sched_param  schedParam;
     pthread_attr_t attr;
+    int ret;
 
     DASSERT(threadp->fxn,return FAILURE);
     DASSERT(threadp->sharedp,return FAILURE);
@@ -581,22 +583,36 @@ static inline int start_thread(thread_handle threadp)
 
     /* Force the thread to use custom scheduling attributes */
     ASSERT(pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED) == 0,
-           return FAILURE);
+           goto error);
 
     /* Set the thread to be fifo real time scheduled */
     ASSERT(pthread_attr_setschedpolicy(&attr, SCHED_FIFO) == 0,
-            return FAILURE);
+            goto error);
 
     schedParam.sched_priority = threadp->priority;
     ASSERT(pthread_attr_setschedparam(&attr, &schedParam) == 0,
-            return FAILURE);
+            goto error);
 
-    ASSERT(pthread_create(&threadp->pthread, &attr, threadp->fxn, threadp) == 0,
-            return FAILURE);
-
+    ret = pthread_create(&threadp->pthread, &attr, threadp->fxn, threadp);
+    if (ret == EPERM) {
+        fprintf(stderr, "[rtsp] %s: SCHED_FIFO unavailable (EPERM), retrying with normal scheduling\n", threadp->name);
+        /* Explicit SCHED_OTHER avoids inheriting a real-time caller's policy. */
+        schedParam.sched_priority = 0;
+        ASSERT(pthread_attr_setschedpolicy(&attr, SCHED_OTHER) == 0, goto error);
+        ASSERT(pthread_attr_setschedparam(&attr, &schedParam) == 0, goto error);
+        ret = pthread_create(&threadp->pthread, &attr, threadp->fxn, threadp);
+    }
+    if (ret != 0) {
+        ERR("%s: pthread_create failed (%d)\n", threadp->name, ret);
+        goto error;
+    }
+    pthread_attr_destroy(&attr);
     threadp->started = TRUE;
 
     return SUCCESS;
+error:
+    pthread_attr_destroy(&attr);
+    return FAILURE;
 }
 
 #define __THREAD_CHECK_JOB(h,v1,v2,v3,v4) do {\
