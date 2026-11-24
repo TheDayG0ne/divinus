@@ -10,6 +10,8 @@
 #define UVC_BUFS 4
 struct uvc_buf { void *data; size_t len; };
 static int fd = -1, width, height, streaming;
+/* Device state is protected by mtx; only the video thread opens it. */
+static int pipeline_active, capture_requested;
 static unsigned int buf_count;
 static uint32_t pixel_format;
 static int input_stride, fps=30;
@@ -24,18 +26,22 @@ static int ctl(unsigned long req, void *arg) { int r; do r=ioctl(fd,req,arg); wh
 static void close_device(void) {
     if (fd < 0) return;
     if (streaming) { enum v4l2_buf_type t=V4L2_BUF_TYPE_VIDEO_CAPTURE; ctl(VIDIOC_STREAMOFF,&t); streaming=0; }
-    for (int i=0;i<UVC_BUFS;i++) if (bufs[i].data) munmap(bufs[i].data,bufs[i].len);
+    for (int i=0;i<UVC_BUFS;i++) if (bufs[i].data) { munmap(bufs[i].data,bufs[i].len); bufs[i].data=NULL; bufs[i].len=0; }
     close(fd); fd=-1; buf_count=0; uvc_encoder_destroy(encoder); encoder=NULL; free(last); last=NULL; last_len=0;
 }
 int uvc_hal_init(void) { memset(uvc_state,0,sizeof(uvc_state)); return 0; }
-void uvc_hal_deinit(void) { close_device(); }
+void uvc_hal_deinit(void) { uvc_pipeline_destroy(); }
 int uvc_system_init(char *config) { (void)config; return 0; }
 void uvc_system_deinit(void) { }
-int uvc_pipeline_create() {
+/* Called with mtx held by the capture thread. */
+static int open_device(void) {
     short w = 1280, h = 720;
     const char *path=getenv("UVC_DEVICE"); if(!path||!*path) path="/dev/video0";
     fd=open(path,O_RDWR|O_NONBLOCK); if(fd<0) return -1;
-    struct v4l2_capability cap; if(ctl(VIDIOC_QUERYCAP,&cap)<0 || !(cap.capabilities&V4L2_CAP_VIDEO_CAPTURE) || !(cap.capabilities&V4L2_CAP_STREAMING)) { close_device(); return -1; }
+    struct v4l2_capability cap; memset(&cap,0,sizeof(cap));
+    if(ctl(VIDIOC_QUERYCAP,&cap)<0) { close_device(); return -1; }
+    uint32_t caps=(cap.capabilities&V4L2_CAP_DEVICE_CAPS)?cap.device_caps:cap.capabilities;
+    if (!(caps&V4L2_CAP_VIDEO_CAPTURE) || !(caps&V4L2_CAP_STREAMING)) { close_device(); return -1; }
     struct v4l2_format f; memset(&f,0,sizeof(f)); f.type=V4L2_BUF_TYPE_VIDEO_CAPTURE;
     f.fmt.pix.width=w>0?w:1280; f.fmt.pix.height=h>0?h:720; f.fmt.pix.pixelformat=V4L2_PIX_FMT_MJPEG; f.fmt.pix.field=V4L2_FIELD_ANY;
     if(ctl(VIDIOC_S_FMT,&f)<0) { f.fmt.pix.pixelformat=V4L2_PIX_FMT_YUYV; if(ctl(VIDIOC_S_FMT,&f)<0) { close_device(); return -1; } }
@@ -54,10 +60,10 @@ int uvc_pipeline_create() {
     if (!encoder) { close_device(); return -1; }
     return 0;
 }
-void uvc_pipeline_destroy(void) { pthread_mutex_lock(&mtx); close_device(); pthread_mutex_unlock(&mtx); }
-void uvc_pipeline_streamon(void) { if(fd>=0&&!streaming){enum v4l2_buf_type t=V4L2_BUF_TYPE_VIDEO_CAPTURE;if(!ctl(VIDIOC_STREAMON,&t))streaming=1;} }
+int uvc_pipeline_create(void) { pthread_mutex_lock(&mtx); pipeline_active=1; capture_requested=0; pthread_mutex_unlock(&mtx); return 0; }
+void uvc_pipeline_destroy(void) { pthread_mutex_lock(&mtx); pipeline_active=0; capture_requested=0; close_device(); pthread_mutex_unlock(&mtx); }
 int uvc_channel_create(char i, short w, short h, char fps, char jpeg){(void)w;(void)h;(void)fps;(void)jpeg; return i>=0&&i<UVC_MAX_CHANNELS?0:-1;}
-int uvc_channel_bind(char i){(void)i; uvc_pipeline_streamon(); return streaming?0:-1;}
+int uvc_channel_bind(char i){if(i<0||i>=UVC_MAX_CHANNELS)return -1; pthread_mutex_lock(&mtx); int active=pipeline_active; if(active) capture_requested=1; pthread_mutex_unlock(&mtx); return active?0:-1;}
 int uvc_channel_unbind(char i){(void)i; return 0;}
 int uvc_video_create(char i, hal_vidconfig *c){if(i<0||i>=UVC_MAX_CHANNELS||!c)return -1;if(c->codec!=HAL_VIDCODEC_H264)return -1;uvc_state[i].payload=HAL_VIDCODEC_H264;return 0;}
 int uvc_video_destroy(char i){if(i<0||i>=UVC_MAX_CHANNELS)return -1;uvc_state[i].enable=0;return 0;}
@@ -68,19 +74,33 @@ int uvc_channel_grayscale(char e){(void)e;return 0;}
 int uvc_audio_init(int r){(void)r;return -1;} void uvc_audio_deinit(void){} void *uvc_audio_thread(void){return NULL;}
 int uvc_region_create(char h,hal_rect r,short o){(void)h;(void)r;(void)o;return 0;} int uvc_region_setbitmap(char h,hal_bitmap*b){(void)h;(void)b;return -1;} void uvc_region_destroy(char h){(void)h;}
 void *uvc_video_thread(void){
-    while(keepRunning){ struct pollfd p={fd,POLLIN,0}; if(fd<0){usleep(10000);continue;} if(poll(&p,1,1000)<=0)continue; if(!(p.revents&POLLIN))continue;
-        struct v4l2_buffer b; memset(&b,0,sizeof(b));b.type=V4L2_BUF_TYPE_VIDEO_CAPTURE;b.memory=V4L2_MEMORY_MMAP; if(ctl(VIDIOC_DQBUF,&b)<0)continue;
+    while(keepRunning){
         pthread_mutex_lock(&mtx);
-        if (b.index >= buf_count || b.bytesused > bufs[b.index].len) { pthread_mutex_unlock(&mtx); continue; }
+        if (!pipeline_active || !capture_requested) { pthread_mutex_unlock(&mtx); usleep(250000); continue; }
+        if (fd<0) {
+            if (open_device()<0) { pthread_mutex_unlock(&mtx); usleep(1000000); continue; }
+            enum v4l2_buf_type t=V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            if (ctl(VIDIOC_STREAMON,&t)<0) { close_device(); pthread_mutex_unlock(&mtx); usleep(1000000); continue; }
+            streaming=1;
+        }
+        struct pollfd p={fd,POLLIN,0};
+        int ready=poll(&p,1,250);
+        if (ready<0 && errno==EINTR) { pthread_mutex_unlock(&mtx); continue; }
+        if (ready<0 || (ready>0 && (p.revents&(POLLERR|POLLHUP|POLLNVAL)))) { close_device(); pthread_mutex_unlock(&mtx); usleep(1000000); continue; }
+        if (ready==0 || !(p.revents&POLLIN)) { pthread_mutex_unlock(&mtx); continue; }
+        struct v4l2_buffer b; memset(&b,0,sizeof(b));b.type=V4L2_BUF_TYPE_VIDEO_CAPTURE;b.memory=V4L2_MEMORY_MMAP;
+        if(ctl(VIDIOC_DQBUF,&b)<0) { if(errno!=EAGAIN) close_device(); pthread_mutex_unlock(&mtx); continue; }
+        if (b.index >= buf_count || b.bytesused > bufs[b.index].len) { close_device(); pthread_mutex_unlock(&mtx); continue; }
         unsigned char *frame = bufs[b.index].data;
         unsigned char *encoded=NULL; size_t encoded_len=0;
         if (pixel_format == V4L2_PIX_FMT_MJPEG) {
             unsigned char *n=realloc(last,b.bytesused); if(n){last=n;memcpy(last,frame,b.bytesused);last_len=b.bytesused;}
         }
-        if (uvc_encoder_encode(encoder,frame,b.bytesused,(uint64_t)b.timestamp.tv_sec*1000000+b.timestamp.tv_usec,(const unsigned char **)&encoded,&encoded_len)<0) { pthread_mutex_unlock(&mtx); ctl(VIDIOC_QBUF,&b); continue; }
+        if (uvc_encoder_encode(encoder,frame,b.bytesused,(uint64_t)b.timestamp.tv_sec*1000000+b.timestamp.tv_usec,(const unsigned char **)&encoded,&encoded_len)<0) { if(ctl(VIDIOC_QBUF,&b)<0) close_device(); pthread_mutex_unlock(&mtx); continue; }
         unsigned char *callback_frame=malloc(encoded_len);
-        if (!callback_frame) { pthread_mutex_unlock(&mtx); ctl(VIDIOC_QBUF,&b); continue; }
+        if (!callback_frame) { if(ctl(VIDIOC_QBUF,&b)<0) close_device(); pthread_mutex_unlock(&mtx); continue; }
         memcpy(callback_frame,encoded,encoded_len);
+        if(ctl(VIDIOC_QBUF,&b)<0) close_device();
         pthread_mutex_unlock(&mtx);
         for (size_t pos=0; pos+3<encoded_len;) {
             size_t start=pos, sc=0;
@@ -100,6 +120,5 @@ void *uvc_video_thread(void){
             pos=end;
         }
         free(callback_frame);
-        ctl(VIDIOC_QBUF,&b);
     } return NULL;
 }
